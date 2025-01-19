@@ -104,7 +104,7 @@
 #define BXT_PR				0x84
 #define BXT_SSFSTS_CTL			0xa0
 #define BXT_FREG_NUM			12
-#define BXT_PR_NUM			6
+#define BXT_PR_NUM			5
 
 #define CNL_PR				0x84
 #define CNL_FREG_NUM			6
@@ -143,11 +143,13 @@
  * @base: Beginning of MMIO space
  * @pregs: Start of protection registers
  * @sregs: Start of software sequencer registers
- * @master: Pointer to the SPI controller structure
+ * @host: Pointer to the SPI controller structure
  * @nregions: Maximum number of regions
  * @pr_num: Maximum number of protected range registers
  * @chip0_size: Size of the first flash chip in bytes
  * @locked: Is SPI setting locked
+ * @protected: Whether the regions are write protected
+ * @bios_locked: Is BIOS region locked
  * @swseq_reg: Use SW sequencer in register reads/writes
  * @swseq_erase: Use SW sequencer in erase operation
  * @atomic_preopcode: Holds preopcode when atomic sequence is requested
@@ -161,11 +163,13 @@ struct intel_spi {
 	void __iomem *base;
 	void __iomem *pregs;
 	void __iomem *sregs;
-	struct spi_controller *master;
+	struct spi_controller *host;
 	size_t nregions;
 	size_t pr_num;
 	size_t chip0_size;
 	bool locked;
+	bool protected;
+	bool bios_locked;
 	bool swseq_reg;
 	bool swseq_erase;
 	u8 atomic_preopcode;
@@ -451,7 +455,7 @@ static u32 intel_spi_chip_addr(const struct intel_spi *ispi,
 	/* Pick up the correct start address */
 	if (!mem)
 		return 0;
-	return mem->spi->chip_select == 1 ? ispi->chip0_size : 0;
+	return (spi_get_chipselect(mem->spi, 0) == 1) ? ispi->chip0_size : 0;
 }
 
 static int intel_spi_read_reg(struct intel_spi *ispi, const struct spi_mem *mem,
@@ -711,8 +715,7 @@ static bool intel_spi_cmp_mem_op(const struct intel_spi_mem_op *iop,
 {
 	if (iop->mem_op.cmd.nbytes != op->cmd.nbytes ||
 	    iop->mem_op.cmd.buswidth != op->cmd.buswidth ||
-	    iop->mem_op.cmd.dtr != op->cmd.dtr ||
-	    iop->mem_op.cmd.opcode != op->cmd.opcode)
+	    iop->mem_op.cmd.dtr != op->cmd.dtr)
 		return false;
 
 	if (iop->mem_op.addr.nbytes != op->addr.nbytes ||
@@ -737,17 +740,18 @@ intel_spi_match_mem_op(struct intel_spi *ispi, const struct spi_mem_op *op)
 	const struct intel_spi_mem_op *iop;
 
 	for (iop = ispi->mem_ops; iop->mem_op.cmd.opcode; iop++) {
-		if (intel_spi_cmp_mem_op(iop, op))
-			break;
+		if (iop->mem_op.cmd.opcode == op->cmd.opcode &&
+		    intel_spi_cmp_mem_op(iop, op))
+			return iop;
 	}
 
-	return iop->mem_op.cmd.opcode ? iop : NULL;
+	return NULL;
 }
 
 static bool intel_spi_supports_mem_op(struct spi_mem *mem,
 				      const struct spi_mem_op *op)
 {
-	struct intel_spi *ispi = spi_master_get_devdata(mem->spi->master);
+	struct intel_spi *ispi = spi_controller_get_devdata(mem->spi->controller);
 	const struct intel_spi_mem_op *iop;
 
 	iop = intel_spi_match_mem_op(ispi, op);
@@ -778,7 +782,7 @@ static bool intel_spi_supports_mem_op(struct spi_mem *mem,
 
 static int intel_spi_exec_mem_op(struct spi_mem *mem, const struct spi_mem_op *op)
 {
-	struct intel_spi *ispi = spi_master_get_devdata(mem->spi->master);
+	struct intel_spi *ispi = spi_controller_get_devdata(mem->spi->controller);
 	const struct intel_spi_mem_op *iop;
 
 	iop = intel_spi_match_mem_op(ispi, op);
@@ -790,7 +794,7 @@ static int intel_spi_exec_mem_op(struct spi_mem *mem, const struct spi_mem_op *o
 
 static const char *intel_spi_get_name(struct spi_mem *mem)
 {
-	const struct intel_spi *ispi = spi_master_get_devdata(mem->spi->master);
+	const struct intel_spi *ispi = spi_controller_get_devdata(mem->spi->controller);
 
 	/*
 	 * Return name of the flash controller device to be compatible
@@ -801,7 +805,7 @@ static const char *intel_spi_get_name(struct spi_mem *mem)
 
 static int intel_spi_dirmap_create(struct spi_mem_dirmap_desc *desc)
 {
-	struct intel_spi *ispi = spi_master_get_devdata(desc->mem->spi->master);
+	struct intel_spi *ispi = spi_controller_get_devdata(desc->mem->spi->controller);
 	const struct intel_spi_mem_op *iop;
 
 	iop = intel_spi_match_mem_op(ispi, &desc->info.op_tmpl);
@@ -815,7 +819,7 @@ static int intel_spi_dirmap_create(struct spi_mem_dirmap_desc *desc)
 static ssize_t intel_spi_dirmap_read(struct spi_mem_dirmap_desc *desc, u64 offs,
 				     size_t len, void *buf)
 {
-	struct intel_spi *ispi = spi_master_get_devdata(desc->mem->spi->master);
+	struct intel_spi *ispi = spi_controller_get_devdata(desc->mem->spi->controller);
 	const struct intel_spi_mem_op *iop = desc->priv;
 	struct spi_mem_op op = desc->info.op_tmpl;
 	int ret;
@@ -832,7 +836,7 @@ static ssize_t intel_spi_dirmap_read(struct spi_mem_dirmap_desc *desc, u64 offs,
 static ssize_t intel_spi_dirmap_write(struct spi_mem_dirmap_desc *desc, u64 offs,
 				      size_t len, const void *buf)
 {
-	struct intel_spi *ispi = spi_master_get_devdata(desc->mem->spi->master);
+	struct intel_spi *ispi = spi_controller_get_devdata(desc->mem->spi->controller);
 	const struct intel_spi_mem_op *iop = desc->priv;
 	struct spi_mem_op op = desc->info.op_tmpl;
 	int ret;
@@ -1109,10 +1113,13 @@ static int intel_spi_init(struct intel_spi *ispi)
 		return -EINVAL;
 	}
 
-	/* Try to disable write protection if user asked to do so */
-	if (writeable && !intel_spi_set_writeable(ispi)) {
-		dev_warn(ispi->dev, "can't disable chip write protection\n");
-		writeable = false;
+	ispi->bios_locked = true;
+	/* Try to disable BIOS write protection if user asked to do so */
+	if (writeable) {
+		if (intel_spi_set_writeable(ispi))
+			ispi->bios_locked = false;
+		else
+			dev_warn(ispi->dev, "can't disable chip write protection\n");
 	}
 
 	/* Disable #SMI generation from HW sequencer */
@@ -1247,13 +1254,22 @@ static void intel_spi_fill_partition(struct intel_spi *ispi,
 		 * Also if the user did not ask the chip to be writeable
 		 * mask the bit too.
 		 */
-		if (!writeable || intel_spi_is_protected(ispi, base, limit))
+		if (!writeable || intel_spi_is_protected(ispi, base, limit)) {
 			part->mask_flags |= MTD_WRITEABLE;
+			ispi->protected = true;
+		}
 
 		end = (limit << 12) + 4096;
 		if (end > part->size)
 			part->size = end;
 	}
+
+	/*
+	 * Regions can refer to the second chip too so in this case we
+	 * just make the BIOS partition to occupy the whole chip.
+	 */
+	if (ispi->chip0_size && part->size > ispi->chip0_size)
+		part->size = MTDPART_SIZ_FULL;
 }
 
 static int intel_spi_read_desc(struct intel_spi *ispi)
@@ -1332,22 +1348,27 @@ static int intel_spi_read_desc(struct intel_spi *ispi)
 
 	nc = (buf[1] & FLMAP0_NC_MASK) >> FLMAP0_NC_SHIFT;
 	if (!nc)
-		ispi->master->num_chipselect = 1;
+		ispi->host->num_chipselect = 1;
 	else if (nc == 1)
-		ispi->master->num_chipselect = 2;
+		ispi->host->num_chipselect = 2;
 	else
 		return -EINVAL;
 
 	dev_dbg(ispi->dev, "%u flash components found\n",
-		ispi->master->num_chipselect);
+		ispi->host->num_chipselect);
 	return 0;
 }
 
 static int intel_spi_populate_chip(struct intel_spi *ispi)
 {
 	struct flash_platform_data *pdata;
+	struct mtd_partition *parts;
 	struct spi_board_info chip;
 	int ret;
+
+	ret = intel_spi_read_desc(ispi);
+	if (ret)
+		return ret;
 
 	pdata = devm_kzalloc(ispi->dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
@@ -1365,24 +1386,83 @@ static int intel_spi_populate_chip(struct intel_spi *ispi)
 	snprintf(chip.modalias, 8, "spi-nor");
 	chip.platform_data = pdata;
 
-	if (!spi_new_device(ispi->master, &chip))
+	if (!spi_new_device(ispi->host, &chip))
 		return -ENODEV;
 
 	/* Add the second chip if present */
-	if (ispi->master->num_chipselect < 2)
+	if (ispi->host->num_chipselect < 2)
 		return 0;
 
-	ret = intel_spi_read_desc(ispi);
-	if (ret)
-		return ret;
+	pdata = devm_kzalloc(ispi->dev, sizeof(*pdata), GFP_KERNEL);
+	if (!pdata)
+		return -ENOMEM;
 
-	chip.platform_data = NULL;
+	pdata->name = devm_kasprintf(ispi->dev, GFP_KERNEL, "%s-chip1",
+				     dev_name(ispi->dev));
+	if (!pdata->name)
+		return -ENOMEM;
+
+	pdata->nr_parts = 1;
+	parts = devm_kcalloc(ispi->dev, pdata->nr_parts, sizeof(*parts),
+			     GFP_KERNEL);
+	if (!parts)
+		return -ENOMEM;
+
+	parts[0].size = MTDPART_SIZ_FULL;
+	parts[0].name = "BIOS1";
+	pdata->parts = parts;
+
+	chip.platform_data = pdata;
 	chip.chip_select = 1;
 
-	if (!spi_new_device(ispi->master, &chip))
+	if (!spi_new_device(ispi->host, &chip))
 		return -ENODEV;
 	return 0;
 }
+
+static ssize_t intel_spi_protected_show(struct device *dev,
+					struct device_attribute *attr, char *buf)
+{
+	struct intel_spi *ispi = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", ispi->protected);
+}
+static DEVICE_ATTR_ADMIN_RO(intel_spi_protected);
+
+static ssize_t intel_spi_locked_show(struct device *dev,
+				     struct device_attribute *attr, char *buf)
+{
+	struct intel_spi *ispi = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", ispi->locked);
+}
+static DEVICE_ATTR_ADMIN_RO(intel_spi_locked);
+
+static ssize_t intel_spi_bios_locked_show(struct device *dev,
+					  struct device_attribute *attr, char *buf)
+{
+	struct intel_spi *ispi = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", ispi->bios_locked);
+}
+static DEVICE_ATTR_ADMIN_RO(intel_spi_bios_locked);
+
+static struct attribute *intel_spi_attrs[] = {
+	&dev_attr_intel_spi_protected.attr,
+	&dev_attr_intel_spi_locked.attr,
+	&dev_attr_intel_spi_bios_locked.attr,
+	NULL
+};
+
+static const struct attribute_group intel_spi_attr_group = {
+	.attrs = intel_spi_attrs,
+};
+
+const struct attribute_group *intel_spi_groups[] = {
+	&intel_spi_attr_group,
+	NULL
+};
+EXPORT_SYMBOL_GPL(intel_spi_groups);
 
 /**
  * intel_spi_probe() - Probe the Intel SPI flash controller
@@ -1396,34 +1476,35 @@ static int intel_spi_populate_chip(struct intel_spi *ispi)
 int intel_spi_probe(struct device *dev, struct resource *mem,
 		    const struct intel_spi_boardinfo *info)
 {
-	struct spi_controller *master;
+	struct spi_controller *host;
 	struct intel_spi *ispi;
 	int ret;
 
-	master = devm_spi_alloc_master(dev, sizeof(*ispi));
-	if (!master)
+	host = devm_spi_alloc_host(dev, sizeof(*ispi));
+	if (!host)
 		return -ENOMEM;
 
-	master->mem_ops = &intel_spi_mem_ops;
+	host->mem_ops = &intel_spi_mem_ops;
 
-	ispi = spi_master_get_devdata(master);
+	ispi = spi_controller_get_devdata(host);
 
 	ispi->base = devm_ioremap_resource(dev, mem);
 	if (IS_ERR(ispi->base))
 		return PTR_ERR(ispi->base);
 
 	ispi->dev = dev;
-	ispi->master = master;
+	ispi->host = host;
 	ispi->info = info;
 
 	ret = intel_spi_init(ispi);
 	if (ret)
 		return ret;
 
-	ret = devm_spi_register_master(dev, master);
+	ret = devm_spi_register_controller(dev, host);
 	if (ret)
 		return ret;
 
+	dev_set_drvdata(dev, ispi);
 	return intel_spi_populate_chip(ispi);
 }
 EXPORT_SYMBOL_GPL(intel_spi_probe);

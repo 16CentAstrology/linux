@@ -682,7 +682,7 @@ static int pxa27x_keypad_resume(struct device *dev)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct pxa27x_keypad *keypad = platform_get_drvdata(pdev);
 	struct input_dev *input_dev = keypad->input_dev;
-	int ret = 0;
+	int error;
 
 	/*
 	 * If the keypad is used as wake up source, the clock is not turned
@@ -691,19 +691,19 @@ static int pxa27x_keypad_resume(struct device *dev)
 	if (device_may_wakeup(&pdev->dev)) {
 		disable_irq_wake(keypad->irq);
 	} else {
-		mutex_lock(&input_dev->mutex);
+		guard(mutex)(&input_dev->mutex);
 
 		if (input_device_enabled(input_dev)) {
 			/* Enable unit clock */
-			ret = clk_prepare_enable(keypad->clk);
-			if (!ret)
-				pxa27x_keypad_config(keypad);
-		}
+			error = clk_prepare_enable(keypad->clk);
+			if (error)
+				return error;
 
-		mutex_unlock(&input_dev->mutex);
+			pxa27x_keypad_config(keypad);
+		}
 	}
 
-	return ret;
+	return 0;
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(pxa27x_keypad_pm_ops,
@@ -717,7 +717,6 @@ static int pxa27x_keypad_probe(struct platform_device *pdev)
 	struct device_node *np = pdev->dev.of_node;
 	struct pxa27x_keypad *keypad;
 	struct input_dev *input_dev;
-	struct resource *res;
 	int irq, error;
 
 	/* Driver need build keycode from device tree or pdata */
@@ -727,12 +726,6 @@ static int pxa27x_keypad_probe(struct platform_device *pdev)
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
 		return -ENXIO;
-
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (res == NULL) {
-		dev_err(&pdev->dev, "failed to get I/O memory\n");
-		return -ENXIO;
-	}
 
 	keypad = devm_kzalloc(&pdev->dev, sizeof(*keypad),
 			      GFP_KERNEL);
@@ -747,7 +740,7 @@ static int pxa27x_keypad_probe(struct platform_device *pdev)
 	keypad->input_dev = input_dev;
 	keypad->irq = irq;
 
-	keypad->mmio_base = devm_ioremap_resource(&pdev->dev, res);
+	keypad->mmio_base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(keypad->mmio_base))
 		return PTR_ERR(keypad->mmio_base);
 

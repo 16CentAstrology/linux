@@ -31,6 +31,12 @@ def have_command(cmd):
 # Get Sphinx version
 major, minor, patch = sphinx.version_info[:3]
 
+#
+# Warn about older versions that we don't want to support for much
+# longer.
+#
+if (major < 2) or (major == 2 and minor < 4):
+    print('WARNING: support for Sphinx < 2.4 will be removed soon.')
 
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
@@ -41,7 +47,7 @@ from load_config import loadConfig
 # -- General configuration ------------------------------------------------
 
 # If your documentation needs a minimal Sphinx version, state it here.
-needs_sphinx = '1.7'
+needs_sphinx = '2.4.4'
 
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
@@ -49,7 +55,7 @@ needs_sphinx = '1.7'
 extensions = ['kerneldoc', 'rstFlatTable', 'kernel_include',
               'kfigure', 'sphinx.ext.ifconfig', 'automarkup',
               'maintainers_include', 'sphinx.ext.autosectionlabel',
-              'kernel_abi', 'kernel_feat']
+              'kernel_abi', 'kernel_feat', 'translations']
 
 if major >= 3:
     if (major > 3) or (minor > 0 or patch >= 2):
@@ -68,6 +74,9 @@ if major >= 3:
             "__percpu",
             "__rcu",
             "__user",
+            "__force",
+            "__counted_by_le",
+            "__counted_by_be",
 
             # include/linux/compiler_attributes.h:
             "__alias",
@@ -99,6 +108,7 @@ if major >= 3:
             "__weak",
             "noinline",
             "__fix_address",
+            "__counted_by",
 
             # include/linux/memblock.h:
             "__init_memblock",
@@ -110,6 +120,9 @@ if major >= 3:
 
             # include/linux/linkage.h:
             "asmlinkage",
+
+            # include/linux/btf.h
+            "__bpf_kfunc",
         ]
 
 else:
@@ -147,7 +160,7 @@ else:
     math_renderer = 'mathjax'
 
 # Add any paths that contain templates here, relative to this directory.
-templates_path = ['_templates']
+templates_path = ['sphinx/templates']
 
 # The suffix(es) of source filenames.
 # You can specify multiple suffix as a list of string:
@@ -322,6 +335,7 @@ if  html_theme == 'alabaster':
         'description': get_cline_version(),
         'page_width': '65em',
         'sidebar_width': '15em',
+        'fixed_sidebar': 'true',
         'font_size': 'inherit',
         'font_family': 'serif',
     }
@@ -333,13 +347,22 @@ sys.stderr.write("Using %s theme\n" % html_theme)
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ['sphinx-static']
 
-# If true, SmartyPants will be used to convert quotes and dashes to
-# typographically correct entities.
-html_use_smartypants = False
+# If true, Docutils "smart quotes" will be used to convert quotes and dashes
+# to typographically correct entities.  However, conversion of "--" to "—"
+# is not always what we want, so enable only quotes.
+smartquotes_action = 'q'
 
 # Custom sidebar templates, maps document names to template names.
 # Note that the RTD theme ignores this
-html_sidebars = { '**': ["about.html", 'searchbox.html', 'localtoc.html', 'sourcelink.html']}
+html_sidebars = { '**': ['searchbox.html', 'kernel-toc.html', 'sourcelink.html']}
+
+# about.html is available for alabaster theme. Add it at the front.
+if html_theme == 'alabaster':
+    html_sidebars['**'].insert(0, 'about.html')
+
+# The name of an image file (relative to this directory) to place at the top
+# of the sidebar.
+html_logo = 'images/logo.svg'
 
 # Output file base name for HTML help builder.
 htmlhelp_basename = 'TheLinuxKerneldoc'
@@ -366,6 +389,12 @@ latex_elements = {
         parsedliteralwraps=true,
         verbatimhintsturnover=false,
     ''',
+
+    #
+    # Some of our authors are fond of deep nesting; tell latex to
+    # cope.
+    #
+    'maxlistdepth': '10',
 
     # For CJK One-half spacing, need to be in front of hyperref
     'extrapackages': r'\usepackage{setspace}',

@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/media/st,stm32-dcmi.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: STMicroelectronics STM32 Digital Camera Memory Interface (DCMI) binding
+title: STMicroelectronics STM32 Digital Camera Memory Interface (DCMI)
 
 maintainers:
   - Hugues Fruchet <hugues.fruchet@foss.st.com>
@@ -35,6 +35,10 @@ properties:
 
   resets:
     maxItems: 1
+
+  access-controllers:
+    minItems: 1
+    maxItems: 2
 
   port:
     $ref: /schemas/graph.yaml#/$defs/port-base

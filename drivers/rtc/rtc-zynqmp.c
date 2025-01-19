@@ -342,12 +342,10 @@ static int xlnx_rtc_probe(struct platform_device *pdev)
 	return devm_rtc_register_device(xrtcdev->rtc);
 }
 
-static int xlnx_rtc_remove(struct platform_device *pdev)
+static void xlnx_rtc_remove(struct platform_device *pdev)
 {
 	xlnx_rtc_alarm_irq_enable(&pdev->dev, 0);
 	device_init_wakeup(&pdev->dev, 0);
-
-	return 0;
 }
 
 static int __maybe_unused xlnx_rtc_suspend(struct device *dev)

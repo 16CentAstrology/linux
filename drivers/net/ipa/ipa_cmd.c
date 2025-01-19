@@ -1,22 +1,23 @@
 // SPDX-License-Identifier: GPL-2.0
 
 /* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
- * Copyright (C) 2019-2022 Linaro Ltd.
+ * Copyright (C) 2019-2024 Linaro Ltd.
  */
 
-#include <linux/types.h>
-#include <linux/device.h>
-#include <linux/slab.h>
 #include <linux/bitfield.h>
+#include <linux/bits.h>
+#include <linux/device.h>
 #include <linux/dma-direction.h>
+#include <linux/types.h>
 
 #include "gsi.h"
 #include "gsi_trans.h"
 #include "ipa.h"
-#include "ipa_endpoint.h"
-#include "ipa_table.h"
 #include "ipa_cmd.h"
+#include "ipa_endpoint.h"
 #include "ipa_mem.h"
+#include "ipa_reg.h"
+#include "ipa_table.h"
 
 /**
  * DOC:  IPA Immediate Commands
@@ -94,11 +95,11 @@ struct ipa_cmd_register_write {
 /* IPA_CMD_IP_PACKET_INIT */
 
 struct ipa_cmd_ip_packet_init {
-	u8 dest_endpoint;
+	u8 dest_endpoint;	/* Full 8 bits used for IPA v5.0+ */
 	u8 reserved[7];
 };
 
-/* Field masks for ipa_cmd_ip_packet_init dest_endpoint field */
+/* Field mask for ipa_cmd_ip_packet_init dest_endpoint field (unused v5.0+) */
 #define IPA_PACKET_INIT_DEST_ENDPOINT_FMASK		GENMASK(4, 0)
 
 /* IPA_CMD_DMA_SHARED_MEM */
@@ -157,9 +158,14 @@ static void ipa_cmd_validate_build(void)
 	BUILD_BUG_ON(field_max(IP_FLTRT_FLAGS_HASH_ADDR_FMASK) !=
 		     field_max(IP_FLTRT_FLAGS_NHASH_ADDR_FMASK));
 
-	/* Valid endpoint numbers must fit in the IP packet init command */
-	BUILD_BUG_ON(field_max(IPA_PACKET_INIT_DEST_ENDPOINT_FMASK) <
-		     IPA_ENDPOINT_MAX - 1);
+	/* Prior to IPA v5.0, we supported no more than 32 endpoints,
+	 * and this was reflected in some 5-bit fields that held
+	 * endpoint numbers.  Starting with IPA v5.0, the widths of
+	 * these fields were extended to 8 bits, meaning up to 256
+	 * endpoints.  If the driver claims to support more than
+	 * that it's an error.
+	 */
+	BUILD_BUG_ON(IPA_ENDPOINT_MAX - 1 > U8_MAX);
 }
 
 /* Validate a memory region holding a table */
@@ -169,7 +175,7 @@ bool ipa_cmd_table_init_valid(struct ipa *ipa, const struct ipa_mem *mem,
 	u32 offset_max = field_max(IP_FLTRT_FLAGS_NHASH_ADDR_FMASK);
 	u32 size_max = field_max(IP_FLTRT_FLAGS_NHASH_SIZE_FMASK);
 	const char *table = route ? "route" : "filter";
-	struct device *dev = &ipa->pdev->dev;
+	struct device *dev = ipa->dev;
 	u32 size;
 
 	size = route ? ipa->route_count : ipa->filter_count + 1;
@@ -199,7 +205,7 @@ bool ipa_cmd_table_init_valid(struct ipa *ipa, const struct ipa_mem *mem,
 /* Validate the memory region that holds headers */
 static bool ipa_cmd_header_init_local_valid(struct ipa *ipa)
 {
-	struct device *dev = &ipa->pdev->dev;
+	struct device *dev = ipa->dev;
 	const struct ipa_mem *mem;
 	u32 offset_max;
 	u32 size_max;
@@ -251,7 +257,7 @@ static bool ipa_cmd_register_write_offset_valid(struct ipa *ipa,
 						const char *name, u32 offset)
 {
 	struct ipa_cmd_register_write *payload;
-	struct device *dev = &ipa->pdev->dev;
+	struct device *dev = ipa->dev;
 	u32 offset_max;
 	u32 bit_count;
 
@@ -282,7 +288,7 @@ static bool ipa_cmd_register_write_offset_valid(struct ipa *ipa,
 /* Check whether offsets passed to register_write are valid */
 static bool ipa_cmd_register_write_valid(struct ipa *ipa)
 {
-	const struct ipa_reg *reg;
+	const struct reg *reg;
 	const char *name;
 	u32 offset;
 
@@ -290,8 +296,12 @@ static bool ipa_cmd_register_write_valid(struct ipa *ipa)
 	 * offset will fit in a register write IPA immediate command.
 	 */
 	if (ipa_table_hash_support(ipa)) {
-		reg = ipa_reg(ipa, FILT_ROUT_HASH_FLUSH);
-		offset = ipa_reg_offset(reg);
+		if (ipa->version < IPA_VERSION_5_0)
+			reg = ipa_reg(ipa, FILT_ROUT_HASH_FLUSH);
+		else
+			reg = ipa_reg(ipa, FILT_ROUT_CACHE_FLUSH);
+
+		offset = reg_offset(reg);
 		name = "filter/route hash flush";
 		if (!ipa_cmd_register_write_offset_valid(ipa, name, offset))
 			return false;
@@ -305,7 +315,7 @@ static bool ipa_cmd_register_write_valid(struct ipa *ipa)
 	 * fits in the register write command field(s) that must hold it.
 	 */
 	reg = ipa_reg(ipa, ENDP_STATUS);
-	offset = ipa_reg_n_offset(reg, IPA_ENDPOINT_COUNT - 1);
+	offset = reg_n_offset(reg, IPA_ENDPOINT_COUNT - 1);
 	name = "maximal endpoint status";
 	if (!ipa_cmd_register_write_offset_valid(ipa, name, offset))
 		return false;
@@ -486,8 +496,13 @@ static void ipa_cmd_ip_packet_init_add(struct gsi_trans *trans, u8 endpoint_id)
 	cmd_payload = ipa_cmd_payload_alloc(ipa, &payload_addr);
 	payload = &cmd_payload->ip_packet_init;
 
-	payload->dest_endpoint = u8_encode_bits(endpoint_id,
-					IPA_PACKET_INIT_DEST_ENDPOINT_FMASK);
+	if (ipa->version < IPA_VERSION_5_0) {
+		payload->dest_endpoint =
+			u8_encode_bits(endpoint_id,
+				       IPA_PACKET_INIT_DEST_ENDPOINT_FMASK);
+	} else {
+		payload->dest_endpoint = endpoint_id;
+	}
 
 	gsi_trans_cmd_add(trans, payload, sizeof(*payload), payload_addr,
 			  opcode);

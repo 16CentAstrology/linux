@@ -27,10 +27,6 @@ properties:
     description: I2C address
     maxItems: 1
 
-  assigned-clocks: true
-  assigned-clock-parents: true
-  assigned-clock-rates: true
-
   clocks:
     description: Clock frequency from 6 to 27MHz
     maxItems: 1
@@ -78,7 +74,7 @@ additionalProperties: false
 
 examples:
   - |
-    i2c0 {
+    i2c {
         #address-cells = <1>;
         #size-cells = <0>;
 
@@ -86,10 +82,6 @@ examples:
             compatible = "ovti,ov9282";
             reg = <0x60>;
             clocks = <&ov9282_clk>;
-
-            assigned-clocks = <&ov9282_clk>;
-            assigned-clock-parents = <&ov9282_clk_parent>;
-            assigned-clock-rates = <24000000>;
 
             port {
                 ov9282: endpoint {

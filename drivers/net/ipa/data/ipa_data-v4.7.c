@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0
 
-/* Copyright (C) 2022 Linaro Ltd. */
+/* Copyright (C) 2022-2024 Linaro Ltd. */
 
+#include <linux/array_size.h>
 #include <linux/log2.h>
 
-#include "../gsi.h"
 #include "../ipa_data.h"
 #include "../ipa_endpoint.h"
 #include "../ipa_mem.h"
+#include "../ipa_version.h"
 
 /** enum ipa_resource_type - IPA resource types for an SoC having IPA v4.7 */
 enum ipa_resource_type {
@@ -357,7 +358,7 @@ static const struct ipa_mem ipa_mem_local_data[] = {
 static const struct ipa_mem_data ipa_mem_data = {
 	.local_count	= ARRAY_SIZE(ipa_mem_local_data),
 	.local		= ipa_mem_local_data,
-	.imem_addr	= 0x146a9000,
+	.imem_addr	= 0x146a8000,
 	.imem_size	= 0x00002000,
 	.smem_id	= 497,
 	.smem_size	= 0x00009000,

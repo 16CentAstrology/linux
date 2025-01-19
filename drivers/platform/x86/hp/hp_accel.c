@@ -342,7 +342,7 @@ static int lis3lv02d_probe(struct platform_device *device)
 	return ret;
 }
 
-static int lis3lv02d_remove(struct platform_device *device)
+static void lis3lv02d_remove(struct platform_device *device)
 {
 	i8042_remove_filter(hp_accel_i8042_filter);
 	lis3lv02d_joystick_disable(&lis3_dev);
@@ -352,7 +352,6 @@ static int lis3lv02d_remove(struct platform_device *device)
 	flush_work(&hpled_led.work);
 
 	lis3lv02d_remove_fs(&lis3_dev);
-	return 0;
 }
 
 static int __maybe_unused lis3lv02d_suspend(struct device *dev)

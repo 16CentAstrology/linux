@@ -38,6 +38,8 @@ properties:
               - fsl,imx8mq-sai
               - fsl,imx8qm-sai
               - fsl,imx8ulp-sai
+              - fsl,imx93-sai
+              - fsl,imx95-sai
               - fsl,vf610-sai
 
   reg:
@@ -74,11 +76,18 @@ properties:
           - const: pll11k
         minItems: 4
 
+  power-domains:
+    maxItems: 1
+
   dmas:
+    minItems: 1
     maxItems: 2
 
   dma-names:
-    maxItems: 2
+    minItems: 1
+    items:
+      - enum: [ rx, tx ]
+      - const: tx
 
   interrupts:
     items:
@@ -142,31 +151,6 @@ properties:
 allOf:
   - $ref: dai-common.yaml#
   - if:
-      properties:
-        compatible:
-          contains:
-            const: fsl,vf610-sai
-    then:
-      properties:
-        dmas:
-          items:
-            - description: DMA controller phandle and request line for TX
-            - description: DMA controller phandle and request line for RX
-        dma-names:
-          items:
-            - const: tx
-            - const: rx
-    else:
-      properties:
-        dmas:
-          items:
-            - description: DMA controller phandle and request line for RX
-            - description: DMA controller phandle and request line for TX
-        dma-names:
-          items:
-            - const: rx
-            - const: tx
-  - if:
       required:
         - fsl,sai-asynchronous
     then:
@@ -198,9 +182,8 @@ examples:
                  <&clks VF610_CLK_SAI2>,
                  <&clks 0>, <&clks 0>;
         clock-names = "bus", "mclk1", "mclk2", "mclk3";
-        dma-names = "tx", "rx";
-        dmas = <&edma0 0 21>,
-               <&edma0 0 20>;
+        dma-names = "rx", "tx";
+        dmas = <&edma0 0 20>, <&edma0 0 21>;
         big-endian;
         lsb-first;
     };

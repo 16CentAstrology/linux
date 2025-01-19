@@ -267,7 +267,7 @@ static int drm_simple_kms_plane_prepare_fb(struct drm_plane *plane,
 
 		WARN_ON_ONCE(pipe->funcs && pipe->funcs->cleanup_fb);
 
-		return drm_gem_simple_display_pipe_prepare_fb(pipe, state);
+		return drm_gem_plane_helper_prepare_fb(plane, state);
 	}
 
 	return pipe->funcs->prepare_fb(pipe, state);
@@ -453,4 +453,5 @@ int drm_simple_display_pipe_init(struct drm_device *dev,
 }
 EXPORT_SYMBOL(drm_simple_display_pipe_init);
 
+MODULE_DESCRIPTION("Helpers for drivers for simple display hardware");
 MODULE_LICENSE("GPL");

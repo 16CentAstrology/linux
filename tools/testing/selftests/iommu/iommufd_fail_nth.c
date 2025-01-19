@@ -41,10 +41,15 @@ static int writeat(int dfd, const char *fn, const char *val)
 
 static __attribute__((constructor)) void setup_buffer(void)
 {
+	PAGE_SIZE = sysconf(_SC_PAGE_SIZE);
+
 	BUFFER_SIZE = 2*1024*1024;
 
 	buffer = mmap(0, BUFFER_SIZE, PROT_READ | PROT_WRITE,
 		      MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+
+	mfd_buffer = memfd_mmap(BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED,
+				&mfd);
 }
 
 /*
@@ -103,7 +108,7 @@ static bool fail_nth_next(struct __test_metadata *_metadata,
 
 	/*
 	 * This is just an arbitrary limit based on the current kernel
-	 * situation. Changes in the kernel can dramtically change the number of
+	 * situation. Changes in the kernel can dramatically change the number of
 	 * required fault injection sites, so if this hits it doesn't
 	 * necessarily mean a test failure, just that the limit has to be made
 	 * bigger.
@@ -297,7 +302,7 @@ TEST_FAIL_NTH(basic_fail_nth, basic)
 TEST_FAIL_NTH(basic_fail_nth, map_domain)
 {
 	uint32_t ioas_id;
-	__u32 device_id;
+	__u32 stdev_id;
 	__u32 hwpt_id;
 	__u64 iova;
 
@@ -313,7 +318,7 @@ TEST_FAIL_NTH(basic_fail_nth, map_domain)
 
 	fail_nth_enable();
 
-	if (_test_cmd_mock_domain(self->fd, ioas_id, &device_id, &hwpt_id))
+	if (_test_cmd_mock_domain(self->fd, ioas_id, &stdev_id, &hwpt_id, NULL))
 		return -1;
 
 	if (_test_ioctl_ioas_map(self->fd, ioas_id, buffer, 262144, &iova,
@@ -321,12 +326,46 @@ TEST_FAIL_NTH(basic_fail_nth, map_domain)
 					 IOMMU_IOAS_MAP_READABLE))
 		return -1;
 
-	if (_test_ioctl_destroy(self->fd, device_id))
-		return -1;
-	if (_test_ioctl_destroy(self->fd, hwpt_id))
+	if (_test_ioctl_destroy(self->fd, stdev_id))
 		return -1;
 
-	if (_test_cmd_mock_domain(self->fd, ioas_id, &device_id, &hwpt_id))
+	if (_test_cmd_mock_domain(self->fd, ioas_id, &stdev_id, &hwpt_id, NULL))
+		return -1;
+	return 0;
+}
+
+/* iopt_area_fill_domains() and iopt_area_fill_domain() */
+TEST_FAIL_NTH(basic_fail_nth, map_file_domain)
+{
+	uint32_t ioas_id;
+	__u32 stdev_id;
+	__u32 hwpt_id;
+	__u64 iova;
+
+	self->fd = open("/dev/iommu", O_RDWR);
+	if (self->fd == -1)
+		return -1;
+
+	if (_test_ioctl_ioas_alloc(self->fd, &ioas_id))
+		return -1;
+
+	if (_test_ioctl_set_temp_memory_limit(self->fd, 32))
+		return -1;
+
+	fail_nth_enable();
+
+	if (_test_cmd_mock_domain(self->fd, ioas_id, &stdev_id, &hwpt_id, NULL))
+		return -1;
+
+	if (_test_ioctl_ioas_map_file(self->fd, ioas_id, mfd, 0, 262144, &iova,
+				      IOMMU_IOAS_MAP_WRITEABLE |
+					      IOMMU_IOAS_MAP_READABLE))
+		return -1;
+
+	if (_test_ioctl_destroy(self->fd, stdev_id))
+		return -1;
+
+	if (_test_cmd_mock_domain(self->fd, ioas_id, &stdev_id, &hwpt_id, NULL))
 		return -1;
 	return 0;
 }
@@ -334,8 +373,8 @@ TEST_FAIL_NTH(basic_fail_nth, map_domain)
 TEST_FAIL_NTH(basic_fail_nth, map_two_domains)
 {
 	uint32_t ioas_id;
-	__u32 device_id2;
-	__u32 device_id;
+	__u32 stdev_id2;
+	__u32 stdev_id;
 	__u32 hwpt_id2;
 	__u32 hwpt_id;
 	__u64 iova;
@@ -350,12 +389,13 @@ TEST_FAIL_NTH(basic_fail_nth, map_two_domains)
 	if (_test_ioctl_set_temp_memory_limit(self->fd, 32))
 		return -1;
 
-	if (_test_cmd_mock_domain(self->fd, ioas_id, &device_id, &hwpt_id))
+	if (_test_cmd_mock_domain(self->fd, ioas_id, &stdev_id, &hwpt_id, NULL))
 		return -1;
 
 	fail_nth_enable();
 
-	if (_test_cmd_mock_domain(self->fd, ioas_id, &device_id2, &hwpt_id2))
+	if (_test_cmd_mock_domain(self->fd, ioas_id, &stdev_id2, &hwpt_id2,
+				  NULL))
 		return -1;
 
 	if (_test_ioctl_ioas_map(self->fd, ioas_id, buffer, 262144, &iova,
@@ -363,19 +403,16 @@ TEST_FAIL_NTH(basic_fail_nth, map_two_domains)
 					 IOMMU_IOAS_MAP_READABLE))
 		return -1;
 
-	if (_test_ioctl_destroy(self->fd, device_id))
-		return -1;
-	if (_test_ioctl_destroy(self->fd, hwpt_id))
+	if (_test_ioctl_destroy(self->fd, stdev_id))
 		return -1;
 
-	if (_test_ioctl_destroy(self->fd, device_id2))
-		return -1;
-	if (_test_ioctl_destroy(self->fd, hwpt_id2))
+	if (_test_ioctl_destroy(self->fd, stdev_id2))
 		return -1;
 
-	if (_test_cmd_mock_domain(self->fd, ioas_id, &device_id, &hwpt_id))
+	if (_test_cmd_mock_domain(self->fd, ioas_id, &stdev_id, &hwpt_id, NULL))
 		return -1;
-	if (_test_cmd_mock_domain(self->fd, ioas_id, &device_id2, &hwpt_id2))
+	if (_test_cmd_mock_domain(self->fd, ioas_id, &stdev_id2, &hwpt_id2,
+				  NULL))
 		return -1;
 	return 0;
 }
@@ -518,7 +555,7 @@ TEST_FAIL_NTH(basic_fail_nth, access_pin_domain)
 {
 	uint32_t access_pages_id;
 	uint32_t ioas_id;
-	__u32 device_id;
+	__u32 stdev_id;
 	__u32 hwpt_id;
 	__u64 iova;
 
@@ -532,7 +569,7 @@ TEST_FAIL_NTH(basic_fail_nth, access_pin_domain)
 	if (_test_ioctl_set_temp_memory_limit(self->fd, 32))
 		return -1;
 
-	if (_test_cmd_mock_domain(self->fd, ioas_id, &device_id, &hwpt_id))
+	if (_test_cmd_mock_domain(self->fd, ioas_id, &stdev_id, &hwpt_id, NULL))
 		return -1;
 
 	if (_test_ioctl_ioas_map(self->fd, ioas_id, buffer, BUFFER_SIZE, &iova,
@@ -570,10 +607,91 @@ TEST_FAIL_NTH(basic_fail_nth, access_pin_domain)
 		return -1;
 	self->access_id = 0;
 
-	if (_test_ioctl_destroy(self->fd, device_id))
+	if (_test_ioctl_destroy(self->fd, stdev_id))
 		return -1;
-	if (_test_ioctl_destroy(self->fd, hwpt_id))
+	return 0;
+}
+
+/* device.c */
+TEST_FAIL_NTH(basic_fail_nth, device)
+{
+	struct iommu_hwpt_selftest data = {
+		.iotlb = IOMMU_TEST_IOTLB_DEFAULT,
+	};
+	struct iommu_test_hw_info info;
+	uint32_t fault_id, fault_fd;
+	uint32_t fault_hwpt_id;
+	uint32_t ioas_id;
+	uint32_t ioas_id2;
+	uint32_t stdev_id;
+	uint32_t idev_id;
+	uint32_t hwpt_id;
+	uint32_t viommu_id;
+	uint32_t vdev_id;
+	__u64 iova;
+
+	self->fd = open("/dev/iommu", O_RDWR);
+	if (self->fd == -1)
 		return -1;
+
+	if (_test_ioctl_ioas_alloc(self->fd, &ioas_id))
+		return -1;
+
+	if (_test_ioctl_ioas_alloc(self->fd, &ioas_id2))
+		return -1;
+
+	iova = MOCK_APERTURE_START;
+	if (_test_ioctl_ioas_map(self->fd, ioas_id, buffer, PAGE_SIZE, &iova,
+				 IOMMU_IOAS_MAP_FIXED_IOVA |
+					 IOMMU_IOAS_MAP_WRITEABLE |
+					 IOMMU_IOAS_MAP_READABLE))
+		return -1;
+	if (_test_ioctl_ioas_map(self->fd, ioas_id2, buffer, PAGE_SIZE, &iova,
+				 IOMMU_IOAS_MAP_FIXED_IOVA |
+					 IOMMU_IOAS_MAP_WRITEABLE |
+					 IOMMU_IOAS_MAP_READABLE))
+		return -1;
+
+	fail_nth_enable();
+
+	if (_test_cmd_mock_domain(self->fd, ioas_id, &stdev_id, NULL,
+				  &idev_id))
+		return -1;
+
+	if (_test_cmd_get_hw_info(self->fd, idev_id, &info, sizeof(info), NULL))
+		return -1;
+
+	if (_test_cmd_hwpt_alloc(self->fd, idev_id, ioas_id, 0, 0, &hwpt_id,
+				 IOMMU_HWPT_DATA_NONE, 0, 0))
+		return -1;
+
+	if (_test_cmd_mock_domain_replace(self->fd, stdev_id, ioas_id2, NULL))
+		return -1;
+
+	if (_test_cmd_mock_domain_replace(self->fd, stdev_id, hwpt_id, NULL))
+		return -1;
+
+	if (_test_cmd_hwpt_alloc(self->fd, idev_id, ioas_id, 0,
+				 IOMMU_HWPT_ALLOC_NEST_PARENT, &hwpt_id,
+				 IOMMU_HWPT_DATA_NONE, 0, 0))
+		return -1;
+
+	if (_test_cmd_viommu_alloc(self->fd, idev_id, hwpt_id,
+				   IOMMU_VIOMMU_TYPE_SELFTEST, 0, &viommu_id))
+		return -1;
+
+	if (_test_cmd_vdevice_alloc(self->fd, viommu_id, idev_id, 0, &vdev_id))
+		return -1;
+
+	if (_test_ioctl_fault_alloc(self->fd, &fault_id, &fault_fd))
+		return -1;
+	close(fault_fd);
+
+	if (_test_cmd_hwpt_alloc(self->fd, idev_id, hwpt_id, fault_id,
+				 IOMMU_HWPT_FAULT_ID_VALID, &fault_hwpt_id,
+				 IOMMU_HWPT_DATA_SELFTEST, &data, sizeof(data)))
+		return -1;
+
 	return 0;
 }
 

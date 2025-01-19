@@ -1,28 +1,25 @@
 // SPDX-License-Identifier: GPL-2.0
 
 /* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
- * Copyright (C) 2018-2022 Linaro Ltd.
+ * Copyright (C) 2018-2024 Linaro Ltd.
  */
 
-#include <linux/types.h>
-#include <linux/kernel.h>
-#include <linux/bits.h>
 #include <linux/bitops.h>
-#include <linux/bitfield.h>
-#include <linux/io.h>
 #include <linux/build_bug.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
+#include <linux/io.h>
+#include <linux/types.h>
 
-#include "ipa.h"
-#include "ipa_version.h"
-#include "ipa_endpoint.h"
-#include "ipa_table.h"
-#include "ipa_reg.h"
-#include "ipa_mem.h"
-#include "ipa_cmd.h"
 #include "gsi.h"
 #include "gsi_trans.h"
+#include "ipa.h"
+#include "ipa_cmd.h"
+#include "ipa_endpoint.h"
+#include "ipa_mem.h"
+#include "ipa_reg.h"
+#include "ipa_table.h"
+#include "ipa_version.h"
 
 /**
  * DOC: IPA Filter and Route Tables
@@ -161,9 +158,15 @@ ipa_table_mem(struct ipa *ipa, bool filter, bool hashed, bool ipv6)
 	return ipa_mem_find(ipa, mem_id);
 }
 
+/* Return true if hashed tables are supported */
+bool ipa_table_hash_support(struct ipa *ipa)
+{
+	return ipa->version != IPA_VERSION_4_2;
+}
+
 bool ipa_filtered_valid(struct ipa *ipa, u64 filtered)
 {
-	struct device *dev = &ipa->pdev->dev;
+	struct device *dev = ipa->dev;
 	u32 count;
 
 	if (!filtered) {
@@ -236,8 +239,7 @@ ipa_filter_reset_table(struct ipa *ipa, bool hashed, bool ipv6, bool modem)
 
 	trans = ipa_cmd_trans_alloc(ipa, hweight64(ep_mask));
 	if (!trans) {
-		dev_err(&ipa->pdev->dev,
-			"no transaction for %s filter reset\n",
+		dev_err(ipa->dev, "no transaction for %s filter reset\n",
 			modem ? "modem" : "AP");
 		return -EBUSY;
 	}
@@ -273,16 +275,15 @@ static int ipa_filter_reset(struct ipa *ipa, bool modem)
 	if (ret)
 		return ret;
 
+	ret = ipa_filter_reset_table(ipa, false, true, modem);
+	if (ret || !ipa_table_hash_support(ipa))
+		return ret;
+
 	ret = ipa_filter_reset_table(ipa, true, false, modem);
 	if (ret)
 		return ret;
 
-	ret = ipa_filter_reset_table(ipa, false, true, modem);
-	if (ret)
-		return ret;
-	ret = ipa_filter_reset_table(ipa, true, true, modem);
-
-	return ret;
+	return ipa_filter_reset_table(ipa, true, true, modem);
 }
 
 /* The AP routes and modem routes are each contiguous within the
@@ -291,15 +292,15 @@ static int ipa_filter_reset(struct ipa *ipa, bool modem)
  * */
 static int ipa_route_reset(struct ipa *ipa, bool modem)
 {
+	bool hash_support = ipa_table_hash_support(ipa);
 	u32 modem_route_count = ipa->modem_route_count;
 	struct gsi_trans *trans;
 	u16 first;
 	u16 count;
 
-	trans = ipa_cmd_trans_alloc(ipa, 4);
+	trans = ipa_cmd_trans_alloc(ipa, hash_support ? 4 : 2);
 	if (!trans) {
-		dev_err(&ipa->pdev->dev,
-			"no transaction for %s route reset\n",
+		dev_err(ipa->dev, "no transaction for %s route reset\n",
 			modem ? "modem" : "AP");
 		return -EBUSY;
 	}
@@ -313,10 +314,12 @@ static int ipa_route_reset(struct ipa *ipa, bool modem)
 	}
 
 	ipa_table_reset_add(trans, false, false, false, first, count);
-	ipa_table_reset_add(trans, false, true, false, first, count);
-
 	ipa_table_reset_add(trans, false, false, true, first, count);
-	ipa_table_reset_add(trans, false, true, true, first, count);
+
+	if (hash_support) {
+		ipa_table_reset_add(trans, false, true, false, first, count);
+		ipa_table_reset_add(trans, false, true, true, first, count);
+	}
 
 	gsi_trans_commit_wait(trans);
 
@@ -325,7 +328,7 @@ static int ipa_route_reset(struct ipa *ipa, bool modem)
 
 void ipa_table_reset(struct ipa *ipa, bool modem)
 {
-	struct device *dev = &ipa->pdev->dev;
+	struct device *dev = ipa->dev;
 	const char *ee_name;
 	int ret;
 
@@ -345,9 +348,8 @@ void ipa_table_reset(struct ipa *ipa, bool modem)
 
 int ipa_table_hash_flush(struct ipa *ipa)
 {
-	const struct ipa_reg *reg;
 	struct gsi_trans *trans;
-	u32 offset;
+	const struct reg *reg;
 	u32 val;
 
 	if (!ipa_table_hash_support(ipa))
@@ -355,19 +357,26 @@ int ipa_table_hash_flush(struct ipa *ipa)
 
 	trans = ipa_cmd_trans_alloc(ipa, 1);
 	if (!trans) {
-		dev_err(&ipa->pdev->dev, "no transaction for hash flush\n");
+		dev_err(ipa->dev, "no transaction for hash flush\n");
 		return -EBUSY;
 	}
 
-	reg = ipa_reg(ipa, FILT_ROUT_HASH_FLUSH);
-	offset = ipa_reg_offset(reg);
+	if (ipa->version < IPA_VERSION_5_0) {
+		reg = ipa_reg(ipa, FILT_ROUT_HASH_FLUSH);
 
-	val = ipa_reg_bit(reg, IPV6_ROUTER_HASH);
-	val |= ipa_reg_bit(reg, IPV6_FILTER_HASH);
-	val |= ipa_reg_bit(reg, IPV4_ROUTER_HASH);
-	val |= ipa_reg_bit(reg, IPV4_FILTER_HASH);
+		val = reg_bit(reg, IPV6_ROUTER_HASH);
+		val |= reg_bit(reg, IPV6_FILTER_HASH);
+		val |= reg_bit(reg, IPV4_ROUTER_HASH);
+		val |= reg_bit(reg, IPV4_FILTER_HASH);
+	} else {
+		reg = ipa_reg(ipa, FILT_ROUT_CACHE_FLUSH);
 
-	ipa_cmd_register_write_add(trans, offset, val, val, false);
+		/* IPA v5.0+ uses a unified cache (both IPv4 and IPv6) */
+		val = reg_bit(reg, ROUTER_CACHE);
+		val |= reg_bit(reg, FILTER_CACHE);
+	}
+
+	ipa_cmd_register_write_add(trans, reg_offset(reg), val, val, false);
 
 	gsi_trans_commit_wait(trans);
 
@@ -461,7 +470,7 @@ int ipa_table_setup(struct ipa *ipa)
 	 */
 	trans = ipa_cmd_trans_alloc(ipa, 8);
 	if (!trans) {
-		dev_err(&ipa->pdev->dev, "no transaction for table setup\n");
+		dev_err(ipa->dev, "no transaction for table setup\n");
 		return -EBUSY;
 	}
 
@@ -486,17 +495,26 @@ static void ipa_filter_tuple_zero(struct ipa_endpoint *endpoint)
 {
 	u32 endpoint_id = endpoint->endpoint_id;
 	struct ipa *ipa = endpoint->ipa;
-	const struct ipa_reg *reg;
+	const struct reg *reg;
 	u32 offset;
 	u32 val;
 
-	reg = ipa_reg(ipa, ENDP_FILTER_ROUTER_HSH_CFG);
+	if (ipa->version < IPA_VERSION_5_0) {
+		reg = ipa_reg(ipa, ENDP_FILTER_ROUTER_HSH_CFG);
 
-	offset = ipa_reg_n_offset(reg, endpoint_id);
-	val = ioread32(endpoint->ipa->reg_virt + offset);
+		offset = reg_n_offset(reg, endpoint_id);
+		val = ioread32(endpoint->ipa->reg_virt + offset);
 
-	/* Zero all filter-related fields, preserving the rest */
-	val &= ~ipa_reg_fmask(reg, FILTER_HASH_MSK_ALL);
+		/* Zero all filter-related fields, preserving the rest */
+		val &= ~reg_fmask(reg, FILTER_HASH_MSK_ALL);
+	} else {
+		/* IPA v5.0 separates filter and router cache configuration */
+		reg = ipa_reg(ipa, ENDP_FILTER_CACHE_CFG);
+		offset = reg_n_offset(reg, endpoint_id);
+
+		/* Zero all filter-related fields */
+		val = 0;
+	}
 
 	iowrite32(val, endpoint->ipa->reg_virt + offset);
 }
@@ -536,17 +554,26 @@ static bool ipa_route_id_modem(struct ipa *ipa, u32 route_id)
  */
 static void ipa_route_tuple_zero(struct ipa *ipa, u32 route_id)
 {
-	const struct ipa_reg *reg;
+	const struct reg *reg;
 	u32 offset;
 	u32 val;
 
-	reg = ipa_reg(ipa, ENDP_FILTER_ROUTER_HSH_CFG);
-	offset = ipa_reg_n_offset(reg, route_id);
+	if (ipa->version < IPA_VERSION_5_0) {
+		reg = ipa_reg(ipa, ENDP_FILTER_ROUTER_HSH_CFG);
+		offset = reg_n_offset(reg, route_id);
 
-	val = ioread32(ipa->reg_virt + offset);
+		val = ioread32(ipa->reg_virt + offset);
 
-	/* Zero all route-related fields, preserving the rest */
-	val &= ~ipa_reg_fmask(reg, ROUTER_HASH_MSK_ALL);
+		/* Zero all route-related fields, preserving the rest */
+		val &= ~reg_fmask(reg, ROUTER_HASH_MSK_ALL);
+	} else {
+		/* IPA v5.0 separates filter and router cache configuration */
+		reg = ipa_reg(ipa, ENDP_ROUTER_CACHE_CFG);
+		offset = reg_n_offset(reg, route_id);
+
+		/* Zero all route-related fields */
+		val = 0;
+	}
 
 	iowrite32(val, ipa->reg_virt + offset);
 }
@@ -687,7 +714,7 @@ bool ipa_table_mem_valid(struct ipa *ipa, bool filter)
  */
 int ipa_table_init(struct ipa *ipa)
 {
-	struct device *dev = &ipa->pdev->dev;
+	struct device *dev = ipa->dev;
 	dma_addr_t addr;
 	__le64 le_addr;
 	__le64 *virt;
@@ -737,7 +764,7 @@ int ipa_table_init(struct ipa *ipa)
 void ipa_table_exit(struct ipa *ipa)
 {
 	u32 count = max_t(u32, 1 + ipa->filter_count, ipa->route_count);
-	struct device *dev = &ipa->pdev->dev;
+	struct device *dev = ipa->dev;
 	size_t size;
 
 	size = IPA_ZERO_RULE_SIZE + (1 + count) * sizeof(__le64);

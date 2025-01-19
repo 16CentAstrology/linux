@@ -9,23 +9,34 @@ static int mt7915_eeprom_load_precal(struct mt7915_dev *dev)
 {
 	struct mt76_dev *mdev = &dev->mt76;
 	u8 *eeprom = mdev->eeprom.data;
-	u32 val = eeprom[MT_EE_DO_PRE_CAL];
-	u32 offs;
+	u32 offs = is_mt7915(&dev->mt76) ? MT_EE_DO_PRE_CAL : MT_EE_DO_PRE_CAL_V2;
+	u32 size, val = eeprom[offs];
+	int ret;
 
-	if (!dev->flash_mode)
+	if (!dev->flash_mode || !val)
 		return 0;
 
-	if (val != (MT_EE_WIFI_CAL_DPD | MT_EE_WIFI_CAL_GROUP))
-		return 0;
+	size = mt7915_get_cal_group_size(dev) + mt7915_get_cal_dpd_size(dev);
 
-	val = MT_EE_CAL_GROUP_SIZE + MT_EE_CAL_DPD_SIZE;
-	dev->cal = devm_kzalloc(mdev->dev, val, GFP_KERNEL);
+	dev->cal = devm_kzalloc(mdev->dev, size, GFP_KERNEL);
 	if (!dev->cal)
 		return -ENOMEM;
 
 	offs = is_mt7915(&dev->mt76) ? MT_EE_PRECAL : MT_EE_PRECAL_V2;
 
-	return mt76_get_of_eeprom(mdev, dev->cal, offs, val);
+	ret = mt76_get_of_data_from_mtd(mdev, dev->cal, offs, size);
+	if (!ret)
+		return ret;
+
+	ret = mt76_get_of_data_from_nvmem(mdev, dev->cal, "precal", size);
+	if (!ret)
+		return ret;
+
+	dev_warn(mdev->dev, "missing precal data, size=%d\n", size);
+	devm_kfree(mdev->dev, dev->cal);
+	dev->cal = NULL;
+
+	return ret;
 }
 
 static int mt7915_check_eeprom(struct mt7915_dev *dev)
@@ -33,11 +44,16 @@ static int mt7915_check_eeprom(struct mt7915_dev *dev)
 	u8 *eeprom = dev->mt76.eeprom.data;
 	u16 val = get_unaligned_le16(eeprom);
 
+#define CHECK_EEPROM_ERR(match)	(match ? 0 : -EINVAL)
 	switch (val) {
 	case 0x7915:
+		return CHECK_EEPROM_ERR(is_mt7915(&dev->mt76));
 	case 0x7916:
+		return CHECK_EEPROM_ERR(is_mt7916(&dev->mt76));
+	case 0x7981:
+		return CHECK_EEPROM_ERR(is_mt7981(&dev->mt76));
 	case 0x7986:
-		return 0;
+		return CHECK_EEPROM_ERR(is_mt7986(&dev->mt76));
 	default:
 		return -EINVAL;
 	}
@@ -49,6 +65,9 @@ static char *mt7915_eeprom_name(struct mt7915_dev *dev)
 	case 0x7915:
 		return dev->dbdc_support ?
 		       MT7915_EEPROM_DEFAULT_DBDC : MT7915_EEPROM_DEFAULT;
+	case 0x7981:
+		/* mt7981 only supports mt7976 and only in DBDC mode */
+		return MT7981_EEPROM_MT7976_DEFAULT_DBDC;
 	case 0x7986:
 		switch (mt7915_check_adie(dev, true)) {
 		case MT7976_ONE_ADIE_DBDC:
@@ -110,18 +129,23 @@ static int mt7915_eeprom_load(struct mt7915_dev *dev)
 	} else {
 		u8 free_block_num;
 		u32 block_num, i;
+		u32 eeprom_blk_size = MT7915_EEPROM_BLOCK_SIZE;
 
-		mt7915_mcu_get_eeprom_free_block(dev, &free_block_num);
-		/* efuse info not enough */
+		ret = mt7915_mcu_get_eeprom_free_block(dev, &free_block_num);
+		if (ret < 0)
+			return ret;
+
+		/* efuse info isn't enough */
 		if (free_block_num >= 29)
 			return -EINVAL;
 
 		/* read eeprom data from efuse */
-		block_num = DIV_ROUND_UP(eeprom_size,
-					 MT7915_EEPROM_BLOCK_SIZE);
-		for (i = 0; i < block_num; i++)
-			mt7915_mcu_get_eeprom(dev,
-					      i * MT7915_EEPROM_BLOCK_SIZE);
+		block_num = DIV_ROUND_UP(eeprom_size, eeprom_blk_size);
+		for (i = 0; i < block_num; i++) {
+			ret = mt7915_mcu_get_eeprom(dev, i * eeprom_blk_size);
+			if (ret < 0)
+				return ret;
+		}
 	}
 
 	return mt7915_check_eeprom(dev);
@@ -207,7 +231,7 @@ void mt7915_eeprom_parse_hw_cap(struct mt7915_dev *dev,
 					eeprom[MT_EE_WIFI_CONF + 2 + band]);
 		}
 
-		if (!is_mt7986(&dev->mt76))
+		if (!is_mt798x(&dev->mt76))
 			nss_max = 2;
 	}
 
@@ -238,10 +262,7 @@ int mt7915_eeprom_init(struct mt7915_dev *dev)
 			return ret;
 	}
 
-	ret = mt7915_eeprom_load_precal(dev);
-	if (ret)
-		return ret;
-
+	mt7915_eeprom_load_precal(dev);
 	mt7915_eeprom_parse_hw_cap(dev, &dev->phy);
 	memcpy(dev->mphy.macaddr, dev->mt76.eeprom.data + MT_EE_MAC_ADDR,
 	       ETH_ALEN);

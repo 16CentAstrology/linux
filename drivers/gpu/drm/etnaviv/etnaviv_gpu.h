@@ -11,6 +11,7 @@
 #include "etnaviv_mmu.h"
 #include "etnaviv_drv.h"
 #include "common.xml.h"
+#include "state.xml.h"
 
 struct etnaviv_gem_submit;
 struct etnaviv_vram_mapping;
@@ -50,6 +51,9 @@ struct etnaviv_chip_identity {
 
 	/* Number of shader cores. */
 	u32 shader_core_count;
+
+	/* Number of Neural Network cores. */
+	u32 nn_core_count;
 
 	/* Size of the vertex cache. */
 	u32 vertex_cache_size;
@@ -92,6 +96,15 @@ struct clk;
 
 #define ETNA_NR_EVENTS 30
 
+enum etnaviv_gpu_state {
+	ETNA_GPU_STATE_UNKNOWN = 0,
+	ETNA_GPU_STATE_IDENTIFIED,
+	ETNA_GPU_STATE_RESET,
+	ETNA_GPU_STATE_INITIALIZED,
+	ETNA_GPU_STATE_RUNNING,
+	ETNA_GPU_STATE_FAULT,
+};
+
 struct etnaviv_gpu {
 	struct drm_device *drm;
 	struct thermal_cooling_device *cooling;
@@ -100,9 +113,9 @@ struct etnaviv_gpu {
 	struct etnaviv_chip_identity identity;
 	enum etnaviv_sec_mode sec_mode;
 	struct workqueue_struct *wq;
+	struct mutex sched_lock;
 	struct drm_gpu_scheduler sched;
-	bool initialized;
-	bool fe_running;
+	enum etnaviv_gpu_state state;
 
 	/* 'ring'-buffer: */
 	struct etnaviv_cmdbuf buffer;
@@ -117,8 +130,8 @@ struct etnaviv_gpu {
 	u32 idle_mask;
 
 	/* Fencing support */
-	struct mutex fence_lock;
-	struct idr fence_idr;
+	struct xarray user_fences;
+	u32 next_user_fence;
 	u32 next_fence;
 	u32 completed_fence;
 	wait_queue_head_t fence_event;
@@ -131,6 +144,7 @@ struct etnaviv_gpu {
 
 	/* hang detection */
 	u32 hangcheck_dma_addr;
+	u32 hangcheck_primid;
 	u32 hangcheck_fence;
 
 	void __iomem *mmio;
@@ -146,6 +160,7 @@ struct etnaviv_gpu {
 	struct clk *clk_shader;
 
 	unsigned int freq_scale;
+	unsigned int fe_waitcycles;
 	unsigned long base_rate_core;
 	unsigned long base_rate_shader;
 };
@@ -157,6 +172,13 @@ static inline void gpu_write(struct etnaviv_gpu *gpu, u32 reg, u32 data)
 
 static inline u32 gpu_read(struct etnaviv_gpu *gpu, u32 reg)
 {
+	/* On some variants, such as the GC7000r6009, some FE registers
+	 * need two reads to be consistent. Do that extra read here and
+	 * throw away the result.
+	 */
+	if (reg >= VIVS_FE_DMA_STATUS && reg <= VIVS_FE_AUTO_FLUSH)
+		readl(gpu->mmio + reg);
+
 	return readl(gpu->mmio + reg);
 }
 

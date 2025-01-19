@@ -54,14 +54,12 @@
 #include <asm/uv/uv.h>
 
 static unsigned long efi_systab_phys __initdata;
-static unsigned long prop_phys = EFI_INVALID_TABLE_ADDR;
 static unsigned long uga_phys = EFI_INVALID_TABLE_ADDR;
 static unsigned long efi_runtime, efi_nr_tables;
 
 unsigned long efi_fw_vendor, efi_config_table;
 
 static const efi_config_table_type_t arch_tables[] __initconst = {
-	{EFI_PROPERTIES_TABLE_GUID,	&prop_phys,		"PROP"		},
 	{UGA_IO_PROTOCOL_GUID,		&uga_phys,		"UGA"		},
 #ifdef CONFIG_X86_UV
 	{UV_SYSTEM_TABLE_GUID,		&uv_systab_phys,	"UVsystab"	},
@@ -82,7 +80,6 @@ static const unsigned long * const efi_tables[] = {
 	&efi_runtime,
 	&efi_config_table,
 	&efi.esrt,
-	&prop_phys,
 	&efi_mem_attr_table,
 #ifdef CONFIG_EFI_RCI2_TABLE
 	&rci2_table_phys,
@@ -95,6 +92,9 @@ static const unsigned long * const efi_tables[] = {
 #endif
 #ifdef CONFIG_EFI_COCO_SECRET
 	&efi.coco_secret,
+#endif
+#ifdef CONFIG_UNACCEPTED_MEMORY
+	&efi.unaccepted,
 #endif
 };
 
@@ -222,8 +222,6 @@ int __init efi_memblock_x86_reserve_range(void)
 
 	if (add_efi_memmap || do_efi_soft_reserve())
 		do_add_efi_memmap();
-
-	efi_fake_memmap_early();
 
 	WARN(efi.memmap.desc_version != 1,
 	     "Unexpected EFI_MEMORY_DESCRIPTOR version %ld",
@@ -380,7 +378,7 @@ static int __init efi_systab_init(unsigned long phys)
 		return -ENOMEM;
 	}
 
-	ret = efi_systab_check_header(hdr, 1);
+	ret = efi_systab_check_header(hdr);
 	if (ret) {
 		early_memunmap(p, size);
 		return ret;
@@ -499,22 +497,6 @@ void __init efi_init(void)
 	if (!efi_runtime_supported() || efi_runtime_disabled()) {
 		efi_memmap_unmap();
 		return;
-	}
-
-	/* Parse the EFI Properties table if it exists */
-	if (prop_phys != EFI_INVALID_TABLE_ADDR) {
-		efi_properties_table_t *tbl;
-
-		tbl = early_memremap_ro(prop_phys, sizeof(*tbl));
-		if (tbl == NULL) {
-			pr_err("Could not map Properties table!\n");
-		} else {
-			if (tbl->memory_protection_attribute &
-			    EFI_PROPERTIES_RUNTIME_MEMORY_PROTECTION_NON_EXECUTABLE_PE_DATA)
-				set_bit(EFI_NX_PE_DATA, &efi.flags);
-
-			early_memunmap(tbl, sizeof(*tbl));
-		}
 	}
 
 	set_bit(EFI_RUNTIME_SERVICES, &efi.flags);
@@ -783,6 +765,7 @@ static void __init kexec_enter_virtual_mode(void)
 
 	efi_sync_low_kernel_mappings();
 	efi_native_runtime_setup();
+	efi_runtime_update_mappings();
 #endif
 }
 
@@ -946,4 +929,9 @@ umode_t efi_attr_is_visible(struct kobject *kobj, struct attribute *attr, int n)
 			return 0;
 	}
 	return attr->mode;
+}
+
+enum efi_secureboot_mode __x86_ima_efi_boot_mode(void)
+{
+	return boot_params.secure_boot;
 }

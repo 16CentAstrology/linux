@@ -22,6 +22,8 @@
 #include <net/ip6_route.h>
 #include "ar-internal.h"
 
+static const struct sockaddr_rxrpc rxrpc_null_addr;
+
 /*
  * Hash a peer key.
  */
@@ -147,10 +149,10 @@ struct rxrpc_peer *rxrpc_lookup_peer_rcu(struct rxrpc_local *local,
  * assess the MTU size for the network interface through which this peer is
  * reached
  */
-static void rxrpc_assess_MTU_size(struct rxrpc_sock *rx,
+static void rxrpc_assess_MTU_size(struct rxrpc_local *local,
 				  struct rxrpc_peer *peer)
 {
-	struct net *net = sock_net(&rx->sk);
+	struct net *net = local->net;
 	struct dst_entry *dst;
 	struct rtable *rt;
 	struct flowi fl;
@@ -226,7 +228,7 @@ struct rxrpc_peer *rxrpc_alloc_peer(struct rxrpc_local *local, gfp_t gfp,
 		rxrpc_peer_init_rtt(peer);
 
 		peer->cong_ssthresh = RXRPC_TX_MAX_WINDOW;
-		trace_rxrpc_peer(peer->debug_id, why, 1);
+		trace_rxrpc_peer(peer->debug_id, 1, why);
 	}
 
 	_leave(" = %p", peer);
@@ -236,11 +238,11 @@ struct rxrpc_peer *rxrpc_alloc_peer(struct rxrpc_local *local, gfp_t gfp,
 /*
  * Initialise peer record.
  */
-static void rxrpc_init_peer(struct rxrpc_sock *rx, struct rxrpc_peer *peer,
+static void rxrpc_init_peer(struct rxrpc_local *local, struct rxrpc_peer *peer,
 			    unsigned long hash_key)
 {
 	peer->hash_key = hash_key;
-	rxrpc_assess_MTU_size(rx, peer);
+	rxrpc_assess_MTU_size(local, peer);
 	peer->mtu = peer->if_mtu;
 	peer->rtt_last_req = ktime_get_real();
 
@@ -272,8 +274,7 @@ static void rxrpc_init_peer(struct rxrpc_sock *rx, struct rxrpc_peer *peer,
 /*
  * Set up a new peer.
  */
-static struct rxrpc_peer *rxrpc_create_peer(struct rxrpc_sock *rx,
-					    struct rxrpc_local *local,
+static struct rxrpc_peer *rxrpc_create_peer(struct rxrpc_local *local,
 					    struct sockaddr_rxrpc *srx,
 					    unsigned long hash_key,
 					    gfp_t gfp)
@@ -285,7 +286,7 @@ static struct rxrpc_peer *rxrpc_create_peer(struct rxrpc_sock *rx,
 	peer = rxrpc_alloc_peer(local, gfp, rxrpc_peer_new_client);
 	if (peer) {
 		memcpy(&peer->srx, srx, sizeof(*srx));
-		rxrpc_init_peer(rx, peer, hash_key);
+		rxrpc_init_peer(local, peer, hash_key);
 	}
 
 	_leave(" = %p", peer);
@@ -304,14 +305,13 @@ static void rxrpc_free_peer(struct rxrpc_peer *peer)
  * since we've already done a search in the list from the non-reentrant context
  * (the data_ready handler) that is the only place we can add new peers.
  */
-void rxrpc_new_incoming_peer(struct rxrpc_sock *rx, struct rxrpc_local *local,
-			     struct rxrpc_peer *peer)
+void rxrpc_new_incoming_peer(struct rxrpc_local *local, struct rxrpc_peer *peer)
 {
 	struct rxrpc_net *rxnet = local->rxnet;
 	unsigned long hash_key;
 
 	hash_key = rxrpc_peer_hash_key(local, &peer->srx);
-	rxrpc_init_peer(rx, peer, hash_key);
+	rxrpc_init_peer(local, peer, hash_key);
 
 	spin_lock(&rxnet->peer_hash_lock);
 	hash_add_rcu(rxnet->peer_hash, &peer->hash_link, hash_key);
@@ -322,8 +322,7 @@ void rxrpc_new_incoming_peer(struct rxrpc_sock *rx, struct rxrpc_local *local,
 /*
  * obtain a remote transport endpoint for the specified address
  */
-struct rxrpc_peer *rxrpc_lookup_peer(struct rxrpc_sock *rx,
-				     struct rxrpc_local *local,
+struct rxrpc_peer *rxrpc_lookup_peer(struct rxrpc_local *local,
 				     struct sockaddr_rxrpc *srx, gfp_t gfp)
 {
 	struct rxrpc_peer *peer, *candidate;
@@ -343,7 +342,7 @@ struct rxrpc_peer *rxrpc_lookup_peer(struct rxrpc_sock *rx,
 		/* The peer is not yet present in hash - create a candidate
 		 * for a new record and then redo the search.
 		 */
-		candidate = rxrpc_create_peer(rx, local, srx, hash_key, gfp);
+		candidate = rxrpc_create_peer(local, srx, hash_key, gfp);
 		if (!candidate) {
 			_leave(" = NULL [nomem]");
 			return NULL;
@@ -382,7 +381,7 @@ struct rxrpc_peer *rxrpc_get_peer(struct rxrpc_peer *peer, enum rxrpc_peer_trace
 	int r;
 
 	__refcount_inc(&peer->ref, &r);
-	trace_rxrpc_peer(peer->debug_id, why, r + 1);
+	trace_rxrpc_peer(peer->debug_id, r + 1, why);
 	return peer;
 }
 
@@ -439,25 +438,6 @@ void rxrpc_put_peer(struct rxrpc_peer *peer, enum rxrpc_peer_trace why)
 }
 
 /*
- * Drop a ref on a peer record where the caller already holds the
- * peer_hash_lock.
- */
-void rxrpc_put_peer_locked(struct rxrpc_peer *peer, enum rxrpc_peer_trace why)
-{
-	unsigned int debug_id = peer->debug_id;
-	bool dead;
-	int r;
-
-	dead = __refcount_dec_and_test(&peer->ref, &r);
-	trace_rxrpc_peer(debug_id, r - 1, why);
-	if (dead) {
-		hash_del_rcu(&peer->hash_link);
-		list_del_init(&peer->keepalive_link);
-		rxrpc_free_peer(peer);
-	}
-}
-
-/*
  * Make sure all peer records have been discarded.
  */
 void rxrpc_destroy_all_peers(struct rxrpc_net *rxnet)
@@ -479,39 +459,53 @@ void rxrpc_destroy_all_peers(struct rxrpc_net *rxnet)
 }
 
 /**
- * rxrpc_kernel_get_peer - Get the peer address of a call
+ * rxrpc_kernel_get_call_peer - Get the peer address of a call
  * @sock: The socket on which the call is in progress.
  * @call: The call to query
- * @_srx: Where to place the result
  *
- * Get the address of the remote peer in a call.
+ * Get a record for the remote peer in a call.
  */
-void rxrpc_kernel_get_peer(struct socket *sock, struct rxrpc_call *call,
-			   struct sockaddr_rxrpc *_srx)
+struct rxrpc_peer *rxrpc_kernel_get_call_peer(struct socket *sock, struct rxrpc_call *call)
 {
-	*_srx = call->peer->srx;
+	return call->peer;
 }
-EXPORT_SYMBOL(rxrpc_kernel_get_peer);
+EXPORT_SYMBOL(rxrpc_kernel_get_call_peer);
 
 /**
  * rxrpc_kernel_get_srtt - Get a call's peer smoothed RTT
- * @sock: The socket on which the call is in progress.
- * @call: The call to query
- * @_srtt: Where to store the SRTT value.
+ * @peer: The peer to query
  *
- * Get the call's peer smoothed RTT in uS.
+ * Get the call's peer smoothed RTT in uS or UINT_MAX if we have no samples.
  */
-bool rxrpc_kernel_get_srtt(struct socket *sock, struct rxrpc_call *call,
-			   u32 *_srtt)
+unsigned int rxrpc_kernel_get_srtt(const struct rxrpc_peer *peer)
 {
-	struct rxrpc_peer *peer = call->peer;
-
-	if (peer->rtt_count == 0) {
-		*_srtt = 1000000; /* 1S */
-		return false;
-	}
-
-	*_srtt = call->peer->srtt_us >> 3;
-	return true;
+	return peer->rtt_count > 0 ? peer->srtt_us >> 3 : UINT_MAX;
 }
 EXPORT_SYMBOL(rxrpc_kernel_get_srtt);
+
+/**
+ * rxrpc_kernel_remote_srx - Get the address of a peer
+ * @peer: The peer to query
+ *
+ * Get a pointer to the address from a peer record.  The caller is responsible
+ * for making sure that the address is not deallocated.
+ */
+const struct sockaddr_rxrpc *rxrpc_kernel_remote_srx(const struct rxrpc_peer *peer)
+{
+	return peer ? &peer->srx : &rxrpc_null_addr;
+}
+EXPORT_SYMBOL(rxrpc_kernel_remote_srx);
+
+/**
+ * rxrpc_kernel_remote_addr - Get the peer transport address of a call
+ * @peer: The peer to query
+ *
+ * Get a pointer to the transport address from a peer record.  The caller is
+ * responsible for making sure that the address is not deallocated.
+ */
+const struct sockaddr *rxrpc_kernel_remote_addr(const struct rxrpc_peer *peer)
+{
+	return (const struct sockaddr *)
+		(peer ? &peer->srx.transport : &rxrpc_null_addr.transport);
+}
+EXPORT_SYMBOL(rxrpc_kernel_remote_addr);

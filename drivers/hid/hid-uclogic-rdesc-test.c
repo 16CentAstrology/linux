@@ -9,6 +9,8 @@
 #include <kunit/test.h>
 #include "./hid-uclogic-rdesc.h"
 
+MODULE_IMPORT_NS("EXPORTED_FOR_KUNIT_TESTING");
+
 struct uclogic_template_case {
 	const char *name;
 	const __u8 *template;
@@ -197,8 +199,7 @@ static void hid_test_uclogic_template(struct kunit *test)
 					   params->param_list,
 					   params->param_num);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, res);
-	KUNIT_EXPECT_EQ(test, 0,
-			memcmp(res, params->expected, params->template_size));
+	KUNIT_EXPECT_MEMEQ(test, res, params->expected, params->template_size);
 	kfree(res);
 }
 

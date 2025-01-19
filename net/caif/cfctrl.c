@@ -201,14 +201,14 @@ int cfctrl_linkup_request(struct cflayer *layer,
 			  struct cflayer *user_layer)
 {
 	struct cfctrl *cfctrl = container_obj(layer);
+	struct cflayer *dn = cfctrl->serv.layer.dn;
+	char utility_name[UTILITY_NAME_LENGTH];
+	struct cfctrl_request_info *req;
+	struct cfpkt *pkt;
 	u32 tmp32;
 	u16 tmp16;
 	u8 tmp8;
-	struct cfctrl_request_info *req;
 	int ret;
-	char utility_name[16];
-	struct cfpkt *pkt;
-	struct cflayer *dn = cfctrl->serv.layer.dn;
 
 	if (!dn) {
 		pr_debug("not able to send linkup request\n");
@@ -269,11 +269,15 @@ int cfctrl_linkup_request(struct cflayer *layer,
 	default:
 		pr_warn("Request setup of bad link type = %d\n",
 			param->linktype);
+		cfpkt_destroy(pkt);
 		return -EINVAL;
 	}
 	req = kzalloc(sizeof(*req), GFP_KERNEL);
-	if (!req)
+	if (!req) {
+		cfpkt_destroy(pkt);
 		return -ENOMEM;
+	}
+
 	req->client_layer = user_layer;
 	req->cmd = CFCTRL_CMD_LINK_SETUP;
 	req->param = *param;

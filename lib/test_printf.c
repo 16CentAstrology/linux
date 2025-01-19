@@ -12,6 +12,7 @@
 #include <linux/random.h>
 #include <linux/rtc.h>
 #include <linux/slab.h>
+#include <linux/sprintf.h>
 #include <linux/string.h>
 
 #include <linux/bitmap.h>
@@ -40,8 +41,6 @@ KSTM_MODULE_GLOBALS();
 
 static char *test_buffer __initdata;
 static char *alloced_buffer __initdata;
-
-extern bool no_hash_pointers;
 
 static int __printf(4, 0) __init
 do_test(int bufsize, const char *expect, int elen,
@@ -387,6 +386,66 @@ kernel_ptr(void)
 static void __init
 struct_resource(void)
 {
+	struct resource test_resource = {
+		.start = 0xc0ffee00,
+		.end = 0xc0ffee00,
+		.flags = IORESOURCE_MEM,
+	};
+
+	test("[mem 0xc0ffee00 flags 0x200]",
+	     "%pr", &test_resource);
+
+	test_resource = (struct resource) {
+		.start = 0xc0ffee,
+		.end = 0xba5eba11,
+		.flags = IORESOURCE_MEM,
+	};
+	test("[mem 0x00c0ffee-0xba5eba11 flags 0x200]",
+	     "%pr", &test_resource);
+
+	test_resource = (struct resource) {
+		.start = 0xba5eba11,
+		.end = 0xc0ffee,
+		.flags = IORESOURCE_MEM,
+	};
+	test("[mem 0xba5eba11-0x00c0ffee flags 0x200]",
+	     "%pr", &test_resource);
+
+	test_resource = (struct resource) {
+		.start = 0xba5eba11,
+		.end = 0xba5eca11,
+		.flags = IORESOURCE_MEM,
+	};
+
+	test("[mem 0xba5eba11-0xba5eca11 flags 0x200]",
+	     "%pr", &test_resource);
+
+	test_resource = (struct resource) {
+		.start = 0xba11,
+		.end = 0xca10,
+		.flags = IORESOURCE_IO |
+			 IORESOURCE_DISABLED |
+			 IORESOURCE_UNSET,
+	};
+
+	test("[io  size 0x1000 disabled]",
+	     "%pR", &test_resource);
+}
+
+static void __init
+struct_range(void)
+{
+	struct range test_range = DEFINE_RANGE(0xc0ffee00ba5eba11,
+					       0xc0ffee00ba5eba11);
+	test("[range 0xc0ffee00ba5eba11]", "%pra", &test_range);
+
+	test_range = DEFINE_RANGE(0xc0ffee, 0xba5eba11);
+	test("[range 0x0000000000c0ffee-0x00000000ba5eba11]",
+	     "%pra", &test_range);
+
+	test_range = DEFINE_RANGE(0xba5eba11, 0xc0ffee);
+	test("[range 0x00000000ba5eba11-0x0000000000c0ffee]",
+	     "%pra", &test_range);
 }
 
 static void __init
@@ -674,17 +733,17 @@ flags(void)
 	gfp = GFP_ATOMIC|__GFP_DMA;
 	test("GFP_ATOMIC|GFP_DMA", "%pGg", &gfp);
 
-	gfp = __GFP_ATOMIC;
-	test("__GFP_ATOMIC", "%pGg", &gfp);
+	gfp = __GFP_HIGH;
+	test("__GFP_HIGH", "%pGg", &gfp);
 
 	/* Any flags not translated by the table should remain numeric */
 	gfp = ~__GFP_BITS_MASK;
 	snprintf(cmp_buffer, BUF_SIZE, "%#lx", (unsigned long) gfp);
 	test(cmp_buffer, "%pGg", &gfp);
 
-	snprintf(cmp_buffer, BUF_SIZE, "__GFP_ATOMIC|%#lx",
+	snprintf(cmp_buffer, BUF_SIZE, "__GFP_HIGH|%#lx",
 							(unsigned long) gfp);
-	gfp |= __GFP_ATOMIC;
+	gfp |= __GFP_HIGH;
 	test(cmp_buffer, "%pGg", &gfp);
 
 	kfree(cmp_buffer);
@@ -764,6 +823,7 @@ test_pointer(void)
 	symbol_ptr();
 	kernel_ptr();
 	struct_resource();
+	struct_range();
 	addr();
 	escaped_str();
 	hex_string();
@@ -799,4 +859,5 @@ static void __init selftest(void)
 
 KSTM_MODULE_LOADERS(test_printf);
 MODULE_AUTHOR("Rasmus Villemoes <linux@rasmusvillemoes.dk>");
+MODULE_DESCRIPTION("Test cases for printf facility");
 MODULE_LICENSE("GPL");

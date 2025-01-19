@@ -8,7 +8,6 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/watchdog.h>
@@ -447,15 +446,13 @@ unregister_tsc:
 	return err;
 }
 
-static int tegra186_timer_remove(struct platform_device *pdev)
+static void tegra186_timer_remove(struct platform_device *pdev)
 {
 	struct tegra186_timer *tegra = platform_get_drvdata(pdev);
 
 	clocksource_unregister(&tegra->usec);
 	clocksource_unregister(&tegra->osc);
 	clocksource_unregister(&tegra->tsc);
-
-	return 0;
 }
 
 static int __maybe_unused tegra186_timer_suspend(struct device *dev)
@@ -511,4 +508,3 @@ module_platform_driver(tegra186_wdt_driver);
 
 MODULE_AUTHOR("Thierry Reding <treding@nvidia.com>");
 MODULE_DESCRIPTION("NVIDIA Tegra186 timers driver");
-MODULE_LICENSE("GPL v2");

@@ -1,19 +1,27 @@
-# SPDX-License-Identifier: GPL-2.0-only or BSD-2-Clause
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
 %YAML 1.2
 ---
 $id: http://devicetree.org/schemas/display/msm/qcom,sc7280-dpu.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Qualcomm Display DPU dt properties for SC7280
+title: Qualcomm Display DPU on SC7280
 
 maintainers:
+  - Bjorn Andersson <andersson@kernel.org>
+  - Neil Armstrong <neil.armstrong@linaro.org>
+  - Dmitry Baryshkov <dmitry.baryshkov@linaro.org>
   - Krishna Manikandan <quic_mkrishn@quicinc.com>
 
 $ref: /schemas/display/msm/dpu-common.yaml#
 
 properties:
   compatible:
-    const: qcom,sc7280-dpu
+    enum:
+      - qcom,sc7280-dpu
+      - qcom,sc8280xp-dpu
+      - qcom,sm8350-dpu
+      - qcom,sm8450-dpu
+      - qcom,sm8550-dpu
 
   reg:
     items:
@@ -42,6 +50,13 @@ properties:
       - const: lut
       - const: core
       - const: vsync
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - clocks
+  - clock-names
 
 unevaluatedProperties: false
 

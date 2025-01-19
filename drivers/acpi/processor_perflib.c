@@ -24,8 +24,6 @@
 
 #define ACPI_PROCESSOR_FILE_PERFORMANCE	"performance"
 
-static DEFINE_MUTEX(performance_mutex);
-
 /*
  * _PPC support is implemented as a CPUfreq policy notifier:
  * This means each time a CPUfreq driver registered also with
@@ -53,6 +51,8 @@ static int acpi_processor_get_platform_limit(struct acpi_processor *pr)
 {
 	acpi_status status = 0;
 	unsigned long long ppc = 0;
+	s32 qos_value;
+	int index;
 	int ret;
 
 	if (!pr)
@@ -72,17 +72,30 @@ static int acpi_processor_get_platform_limit(struct acpi_processor *pr)
 		}
 	}
 
-	pr_debug("CPU %d: _PPC is %d - frequency %s limited\n", pr->id,
-		       (int)ppc, ppc ? "" : "not");
+	index = ppc;
 
-	pr->performance_platform_limit = (int)ppc;
-
-	if (ppc >= pr->performance->state_count ||
-	    unlikely(!freq_qos_request_active(&pr->perflib_req)))
+	if (pr->performance_platform_limit == index ||
+	    ppc >= pr->performance->state_count)
 		return 0;
 
-	ret = freq_qos_update_request(&pr->perflib_req,
-			pr->performance->states[ppc].core_frequency * 1000);
+	pr_debug("CPU %d: _PPC is %d - frequency %s limited\n", pr->id,
+		 index, index ? "is" : "is not");
+
+	pr->performance_platform_limit = index;
+
+	if (unlikely(!freq_qos_request_active(&pr->perflib_req)))
+		return 0;
+
+	/*
+	 * If _PPC returns 0, it means that all of the available states can be
+	 * used ("no limit").
+	 */
+	if (index == 0)
+		qos_value = FREQ_QOS_MAX_DEFAULT_VALUE;
+	else
+		qos_value = pr->performance->states[index].core_frequency * 1000;
+
+	ret = freq_qos_update_request(&pr->perflib_req, qos_value);
 	if (ret < 0) {
 		pr_warn("Failed to update perflib freq constraint: CPU%d (%d)\n",
 			pr->id, ret);
@@ -166,9 +179,16 @@ void acpi_processor_ppc_init(struct cpufreq_policy *policy)
 		if (!pr)
 			continue;
 
+		/*
+		 * Reset performance_platform_limit in case there is a stale
+		 * value in it, so as to make it match the "no limit" QoS value
+		 * below.
+		 */
+		pr->performance_platform_limit = 0;
+
 		ret = freq_qos_add_request(&policy->constraints,
-					   &pr->perflib_req,
-					   FREQ_QOS_MAX, INT_MAX);
+					   &pr->perflib_req, FREQ_QOS_MAX,
+					   FREQ_QOS_MAX_DEFAULT_VALUE);
 		if (ret < 0)
 			pr_err("Failed to add freq constraint for CPU%d (%d)\n",
 			       cpu, ret);
@@ -186,6 +206,10 @@ void acpi_processor_ppc_exit(struct cpufreq_policy *policy)
 			freq_qos_remove_request(&pr->perflib_req);
 	}
 }
+
+#ifdef CONFIG_X86
+
+static DEFINE_MUTEX(performance_mutex);
 
 static int acpi_processor_get_performance_control(struct acpi_processor *pr)
 {
@@ -245,7 +269,6 @@ end:
 	return result;
 }
 
-#ifdef CONFIG_X86
 /*
  * Some AMDs have 50MHz frequency multiples, but only provide 100MHz rounding
  * in their ACPI data. Calculate the real values and fix up the _PSS data.
@@ -276,9 +299,6 @@ static void amd_fixup_frequency(struct acpi_processor_px *px, int i)
 			px->core_frequency = (100 * (fid + 8)) >> did;
 	}
 }
-#else
-static void amd_fixup_frequency(struct acpi_processor_px *px, int i) {};
-#endif
 
 static int acpi_processor_get_performance_states(struct acpi_processor *pr)
 {
@@ -418,13 +438,11 @@ int acpi_processor_get_performance_info(struct acpi_processor *pr)
 	 * the BIOS is older than the CPU and does not know its frequencies
 	 */
  update_bios:
-#ifdef CONFIG_X86
 	if (acpi_has_method(pr->handle, "_PPC")) {
 		if(boot_cpu_has(X86_FEATURE_EST))
 			pr_warn(FW_BUG "BIOS needs update for CPU "
 			       "frequency support\n");
 	}
-#endif
 	return result;
 }
 EXPORT_SYMBOL_GPL(acpi_processor_get_performance_info);
@@ -766,3 +784,4 @@ unlock:
 	mutex_unlock(&performance_mutex);
 }
 EXPORT_SYMBOL(acpi_processor_unregister_performance);
+#endif

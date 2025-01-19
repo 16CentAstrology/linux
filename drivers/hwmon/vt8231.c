@@ -892,7 +892,7 @@ exit_remove_files:
 	return err;
 }
 
-static int vt8231_remove(struct platform_device *pdev)
+static void vt8231_remove(struct platform_device *pdev)
 {
 	struct vt8231_data *data = platform_get_drvdata(pdev);
 	int i;
@@ -906,13 +906,11 @@ static int vt8231_remove(struct platform_device *pdev)
 		sysfs_remove_group(&pdev->dev.kobj, &vt8231_group_temps[i]);
 
 	sysfs_remove_group(&pdev->dev.kobj, &vt8231_group);
-
-	return 0;
 }
 
 
 static struct platform_driver vt8231_driver = {
-	.driver = {
+	.driver	= {
 		.name	= DRIVER_NAME,
 	},
 	.probe	= vt8231_probe,
@@ -971,13 +969,15 @@ static int vt8231_pci_probe(struct pci_dev *dev,
 				const struct pci_device_id *id)
 {
 	u16 address, val;
+	int ret;
+
 	if (force_addr) {
 		address = force_addr & 0xff00;
 		dev_warn(&dev->dev, "Forcing ISA address 0x%x\n",
 			 address);
 
-		if (PCIBIOS_SUCCESSFUL !=
-		    pci_write_config_word(dev, VT8231_BASE_REG, address | 1))
+		ret = pci_write_config_word(dev, VT8231_BASE_REG, address | 1);
+		if (ret != PCIBIOS_SUCCESSFUL)
 			return -ENODEV;
 	}
 
@@ -997,9 +997,8 @@ static int vt8231_pci_probe(struct pci_dev *dev,
 
 	if (!(val & 0x0001)) {
 		dev_warn(&dev->dev, "enabling sensors\n");
-		if (PCIBIOS_SUCCESSFUL !=
-			pci_write_config_word(dev, VT8231_ENABLE_REG,
-							val | 0x0001))
+		ret = pci_write_config_word(dev, VT8231_ENABLE_REG, val | 0x1);
+		if (ret != PCIBIOS_SUCCESSFUL)
 			return -ENODEV;
 	}
 

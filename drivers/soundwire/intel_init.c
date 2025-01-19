@@ -16,7 +16,9 @@
 #include <linux/pm_runtime.h>
 #include <linux/soundwire/sdw_intel.h>
 #include "cadence_master.h"
+#include "bus.h"
 #include "intel.h"
+#include "intel_auxdevice.h"
 
 static void intel_link_dev_release(struct device *dev)
 {
@@ -60,19 +62,31 @@ static struct sdw_intel_link_dev *intel_link_dev_register(struct sdw_intel_res *
 
 	/* Add link information used in the driver probe */
 	link = &ldev->link_res;
+	link->hw_ops = res->hw_ops;
 	link->mmio_base = res->mmio_base;
-	link->registers = res->mmio_base + SDW_LINK_BASE
-		+ (SDW_LINK_SIZE * link_id);
-	link->shim = res->mmio_base + res->shim_base;
-	link->alh = res->mmio_base + res->alh_base;
+	if (!res->ext) {
+		link->registers = res->mmio_base + SDW_LINK_BASE
+			+ (SDW_LINK_SIZE * link_id);
+		link->ip_offset = 0;
+		link->shim = res->mmio_base + res->shim_base;
+		link->alh = res->mmio_base + res->alh_base;
+		link->shim_lock = &ctx->shim_lock;
+	} else {
+		link->registers = res->mmio_base + SDW_IP_BASE(link_id);
+		link->ip_offset = SDW_CADENCE_MCP_IP_OFFSET;
+		link->shim = res->mmio_base +  SDW_SHIM2_GENERIC_BASE(link_id);
+		link->shim_vs = res->mmio_base + SDW_SHIM2_VS_BASE(link_id);
+		link->shim_lock = res->eml_lock;
+	}
 
 	link->ops = res->ops;
 	link->dev = res->dev;
 
 	link->clock_stop_quirks = res->clock_stop_quirks;
-	link->shim_lock = &ctx->shim_lock;
 	link->shim_mask = &ctx->shim_mask;
 	link->link_mask = ctx->link_mask;
+
+	link->hbus = res->hbus;
 
 	/* now follow the two-step init/add sequence */
 	ret = auxiliary_device_init(auxdev);
@@ -135,7 +149,7 @@ irqreturn_t sdw_intel_thread(int irq, void *dev_id)
 
 	return IRQ_HANDLED;
 }
-EXPORT_SYMBOL_NS(sdw_intel_thread, SOUNDWIRE_INTEL_INIT);
+EXPORT_SYMBOL_NS(sdw_intel_thread, "SOUNDWIRE_INTEL_INIT");
 
 static struct sdw_intel_ctx
 *sdw_intel_probe_controller(struct sdw_intel_res *res)
@@ -238,17 +252,16 @@ static struct sdw_intel_ctx
 			num_slaves++;
 	}
 
-	ctx->ids = kcalloc(num_slaves, sizeof(*ctx->ids), GFP_KERNEL);
-	if (!ctx->ids)
+	ctx->peripherals = kmalloc(struct_size(ctx->peripherals, array, num_slaves),
+				   GFP_KERNEL);
+	if (!ctx->peripherals)
 		goto err;
-
-	ctx->num_slaves = num_slaves;
+	ctx->peripherals->num_peripherals = num_slaves;
 	i = 0;
 	list_for_each_entry(link, &ctx->link_list, list) {
 		bus = &link->cdns->bus;
 		list_for_each_entry(slave, &bus->slaves, node) {
-			ctx->ids[i].id = slave->id;
-			ctx->ids[i].link_id = bus->link_id;
+			ctx->peripherals->array[i] = slave;
 			i++;
 		}
 	}
@@ -321,7 +334,7 @@ struct sdw_intel_ctx
 {
 	return sdw_intel_probe_controller(res);
 }
-EXPORT_SYMBOL_NS(sdw_intel_probe, SOUNDWIRE_INTEL_INIT);
+EXPORT_SYMBOL_NS(sdw_intel_probe, "SOUNDWIRE_INTEL_INIT");
 
 /**
  * sdw_intel_startup() - SoundWire Intel startup
@@ -334,7 +347,7 @@ int sdw_intel_startup(struct sdw_intel_ctx *ctx)
 {
 	return sdw_intel_startup_controller(ctx);
 }
-EXPORT_SYMBOL_NS(sdw_intel_startup, SOUNDWIRE_INTEL_INIT);
+EXPORT_SYMBOL_NS(sdw_intel_startup, "SOUNDWIRE_INTEL_INIT");
 /**
  * sdw_intel_exit() - SoundWire Intel exit
  * @ctx: SoundWire context allocated in the probe
@@ -343,12 +356,25 @@ EXPORT_SYMBOL_NS(sdw_intel_startup, SOUNDWIRE_INTEL_INIT);
  */
 void sdw_intel_exit(struct sdw_intel_ctx *ctx)
 {
+	struct sdw_intel_link_res *link;
+
+	/* we first resume links and devices and wait synchronously before the cleanup */
+	list_for_each_entry(link, &ctx->link_list, list) {
+		struct sdw_bus *bus = &link->cdns->bus;
+		int ret;
+
+		ret = device_for_each_child(bus->dev, NULL, intel_resume_child_device);
+		if (ret < 0)
+			dev_err(bus->dev, "%s: intel_resume_child_device failed: %d\n",
+				__func__, ret);
+	}
+
 	sdw_intel_cleanup(ctx);
-	kfree(ctx->ids);
+	kfree(ctx->peripherals);
 	kfree(ctx->ldev);
 	kfree(ctx);
 }
-EXPORT_SYMBOL_NS(sdw_intel_exit, SOUNDWIRE_INTEL_INIT);
+EXPORT_SYMBOL_NS(sdw_intel_exit, "SOUNDWIRE_INTEL_INIT");
 
 void sdw_intel_process_wakeen_event(struct sdw_intel_ctx *ctx)
 {
@@ -371,7 +397,7 @@ void sdw_intel_process_wakeen_event(struct sdw_intel_ctx *ctx)
 		intel_link_process_wakeen_event(&ldev->auxdev);
 	}
 }
-EXPORT_SYMBOL_NS(sdw_intel_process_wakeen_event, SOUNDWIRE_INTEL_INIT);
+EXPORT_SYMBOL_NS(sdw_intel_process_wakeen_event, "SOUNDWIRE_INTEL_INIT");
 
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_DESCRIPTION("Intel Soundwire Init Library");

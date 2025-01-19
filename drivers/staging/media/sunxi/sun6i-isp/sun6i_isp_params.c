@@ -183,8 +183,8 @@ void sun6i_isp_params_configure(struct sun6i_isp_device *isp_dev)
 	if (state->configured)
 		goto complete;
 
-	 sun6i_isp_params_configure_modules(isp_dev,
-					    &sun6i_isp_params_config_default);
+	sun6i_isp_params_configure_modules(isp_dev,
+					   &sun6i_isp_params_config_default);
 
 	state->configured = true;
 
@@ -208,6 +208,8 @@ static void sun6i_isp_params_state_cleanup(struct sun6i_isp_device *isp_dev,
 		vb2_buffer = &state->pending->v4l2_buffer.vb2_buf;
 		vb2_buffer_done(vb2_buffer, error ? VB2_BUF_STATE_ERROR :
 				VB2_BUF_STATE_QUEUED);
+
+		state->pending = NULL;
 	}
 
 	list_for_each_entry(isp_buffer, &state->queue, list) {
@@ -377,8 +379,6 @@ static const struct vb2_ops sun6i_isp_params_queue_ops = {
 	.buf_queue		= sun6i_isp_params_buffer_queue,
 	.start_streaming	= sun6i_isp_params_start_streaming,
 	.stop_streaming		= sun6i_isp_params_stop_streaming,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 /* Video Device */
@@ -487,7 +487,7 @@ int sun6i_isp_params_setup(struct sun6i_isp_device *isp_dev)
 	queue->buf_struct_size = sizeof(struct sun6i_isp_buffer);
 	queue->ops = &sun6i_isp_params_queue_ops;
 	queue->mem_ops = &vb2_vmalloc_memops;
-	queue->min_buffers_needed = 1;
+	queue->min_queued_buffers = 1;
 	queue->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
 	queue->lock = &params->lock;
 	queue->dev = isp_dev->dev;

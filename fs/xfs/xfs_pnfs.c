@@ -58,8 +58,7 @@ xfs_fs_get_uuid(
 {
 	struct xfs_mount	*mp = XFS_M(sb);
 
-	xfs_notice_once(mp,
-"Using experimental pNFS feature, use at your own risk!");
+	xfs_warn_experimental(mp, XFS_EXPERIMENTAL_PNFS);
 
 	if (*len < sizeof(uuid_t))
 		return -EINVAL;
@@ -322,7 +321,7 @@ xfs_fs_commit_blocks(
 	xfs_trans_log_inode(tp, ip, XFS_ILOG_CORE);
 
 	ASSERT(!(iattr->ia_valid & (ATTR_UID | ATTR_GID)));
-	setattr_copy(&init_user_ns, inode, iattr);
+	setattr_copy(&nop_mnt_idmap, inode, iattr);
 	if (update_isize) {
 		i_size_write(inode, iattr->ia_size);
 		ip->i_disk_size = iattr->ia_size;

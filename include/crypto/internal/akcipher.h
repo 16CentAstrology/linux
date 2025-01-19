@@ -69,7 +69,7 @@ static inline void *akcipher_tfm_ctx_dma(struct crypto_akcipher *tfm)
 static inline void akcipher_request_complete(struct akcipher_request *req,
 					     int err)
 {
-	req->base.complete(&req->base, err);
+	crypto_request_complete(&req->base, err);
 }
 
 static inline const char *akcipher_alg_name(struct crypto_akcipher *tfm)
@@ -124,7 +124,7 @@ static inline struct akcipher_alg *crypto_spawn_akcipher_alg(
 /**
  * crypto_register_akcipher() -- Register public key algorithm
  *
- * Function registers an implementation of a public key verify algorithm
+ * Function registers an implementation of a public key cipher algorithm
  *
  * @alg:	algorithm definition
  *
@@ -135,7 +135,7 @@ int crypto_register_akcipher(struct akcipher_alg *alg);
 /**
  * crypto_unregister_akcipher() -- Unregister public key algorithm
  *
- * Function unregisters an implementation of a public key verify algorithm
+ * Function unregisters an implementation of a public key cipher algorithm
  *
  * @alg:	algorithm definition
  */

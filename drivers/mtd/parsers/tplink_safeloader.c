@@ -91,7 +91,7 @@ static int mtd_parser_tplink_safeloader_parse(struct mtd_info *mtd,
 	buf = mtd_parser_tplink_safeloader_read_table(mtd);
 	if (!buf) {
 		err = -ENOENT;
-		goto err_out;
+		goto err_free_parts;
 	}
 
 	for (idx = 0, offset = TPLINK_SAFELOADER_DATA_OFFSET;
@@ -118,6 +118,8 @@ static int mtd_parser_tplink_safeloader_parse(struct mtd_info *mtd,
 err_free:
 	for (idx -= 1; idx >= 0; idx--)
 		kfree(parts[idx].name);
+err_free_parts:
+	kfree(parts);
 err_out:
 	return err;
 };
@@ -147,4 +149,5 @@ static struct mtd_part_parser mtd_parser_tplink_safeloader = {
 };
 module_mtd_part_parser(mtd_parser_tplink_safeloader);
 
+MODULE_DESCRIPTION("TP-Link Safeloader partitions parser");
 MODULE_LICENSE("GPL");

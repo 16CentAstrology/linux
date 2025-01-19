@@ -3,12 +3,12 @@
 #ifndef BTRFS_MISC_H
 #define BTRFS_MISC_H
 
+#include <linux/types.h>
+#include <linux/bitmap.h>
 #include <linux/sched.h>
 #include <linux/wait.h>
 #include <linux/math64.h>
 #include <linux/rbtree.h>
-
-#define in_range(b, first, len) ((b) >= (first) && (b) < (first) + (len))
 
 /*
  * Enumerate bits using enum autoincrement. Define the @name as the n-th bit.
@@ -66,7 +66,7 @@ struct rb_simple_node {
 	u64 bytenr;
 };
 
-static inline struct rb_node *rb_simple_search(struct rb_root *root, u64 bytenr)
+static inline struct rb_node *rb_simple_search(const struct rb_root *root, u64 bytenr)
 {
 	struct rb_node *node = root->rb_node;
 	struct rb_simple_node *entry;
@@ -93,7 +93,7 @@ static inline struct rb_node *rb_simple_search(struct rb_root *root, u64 bytenr)
  * Return the rb_node that start at or after @bytenr.  If there is no entry at
  * or after @bytner return NULL.
  */
-static inline struct rb_node *rb_simple_search_first(struct rb_root *root,
+static inline struct rb_node *rb_simple_search_first(const struct rb_root *root,
 						     u64 bytenr)
 {
 	struct rb_node *node = root->rb_node, *ret = NULL;
@@ -141,6 +141,26 @@ static inline struct rb_node *rb_simple_insert(struct rb_root *root, u64 bytenr,
 	rb_link_node(node, parent, p);
 	rb_insert_color(node, root);
 	return NULL;
+}
+
+static inline bool bitmap_test_range_all_set(const unsigned long *addr,
+					     unsigned long start,
+					     unsigned long nbits)
+{
+	unsigned long found_zero;
+
+	found_zero = find_next_zero_bit(addr, start + nbits, start);
+	return (found_zero == start + nbits);
+}
+
+static inline bool bitmap_test_range_all_zero(const unsigned long *addr,
+					      unsigned long start,
+					      unsigned long nbits)
+{
+	unsigned long found_set;
+
+	found_set = find_next_bit(addr, start + nbits, start);
+	return (found_set == start + nbits);
 }
 
 #endif

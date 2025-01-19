@@ -7,41 +7,6 @@
 
 #include <arm64/renesas/rzg2ul-smarc-som.dtsi>
 
-/ {
-	aliases {
-		/delete-property/ ethernet0;
-		/delete-property/ ethernet1;
-	};
-
-	chosen {
-		bootargs = "ignore_loglevel";
-	};
-};
-
-&dmac {
-	status = "disabled";
-};
-
-&eth0 {
-	status = "disabled";
-};
-
-&eth1 {
-	status = "disabled";
-};
-
-&ostm1 {
-	status = "disabled";
-};
-
-&ostm2 {
-	status = "disabled";
-};
-
-&sdhi0 {
-	status = "disabled";
-};
-
-&wdt0 {
+&sbc {
 	status = "disabled";
 };
