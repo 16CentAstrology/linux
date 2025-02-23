@@ -22,10 +22,55 @@
 #include <linux/compat.h>
 #include <linux/uaccess.h>
 
-#include <asm/unaligned.h>
+/*
+ * Some filesystems were never converted to '->iterate_shared()'
+ * and their directory iterators want the inode lock held for
+ * writing. This wrapper allows for converting from the shared
+ * semantics to the exclusive inode use.
+ */
+int wrap_directory_iterator(struct file *file,
+			    struct dir_context *ctx,
+			    int (*iter)(struct file *, struct dir_context *))
+{
+	struct inode *inode = file_inode(file);
+	int ret;
+
+	/*
+	 * We'd love to have an 'inode_upgrade_trylock()' operation,
+	 * see the comment in mmap_upgrade_trylock() in mm/memory.c.
+	 *
+	 * But considering this is for "filesystems that never got
+	 * converted", it really doesn't matter.
+	 *
+	 * Also note that since we have to return with the lock held
+	 * for reading, we can't use the "killable()" locking here,
+	 * since we do need to get the lock even if we're dying.
+	 *
+	 * We could do the write part killably and then get the read
+	 * lock unconditionally if it mattered, but see above on why
+	 * this does the very simplistic conversion.
+	 */
+	up_read(&inode->i_rwsem);
+	down_write(&inode->i_rwsem);
+
+	/*
+	 * Since we dropped the inode lock, we should do the
+	 * DEADDIR test again. See 'iterate_dir()' below.
+	 *
+	 * Note that we don't need to re-do the f_pos games,
+	 * since the file must be locked wrt f_pos anyway.
+	 */
+	ret = -ENOENT;
+	if (!IS_DEADDIR(inode))
+		ret = iter(file, ctx);
+
+	downgrade_write(&inode->i_rwsem);
+	return ret;
+}
+EXPORT_SYMBOL(wrap_directory_iterator);
 
 /*
- * Note the "unsafe_put_user() semantics: we goto a
+ * Note the "unsafe_put_user()" semantics: we goto a
  * label for errors.
  */
 #define unsafe_copy_dirent_name(_dst, _src, _len, label) do {	\
@@ -40,39 +85,32 @@
 int iterate_dir(struct file *file, struct dir_context *ctx)
 {
 	struct inode *inode = file_inode(file);
-	bool shared = false;
 	int res = -ENOTDIR;
-	if (file->f_op->iterate_shared)
-		shared = true;
-	else if (!file->f_op->iterate)
+
+	if (!file->f_op->iterate_shared)
 		goto out;
 
 	res = security_file_permission(file, MAY_READ);
 	if (res)
 		goto out;
 
-	if (shared)
-		res = down_read_killable(&inode->i_rwsem);
-	else
-		res = down_write_killable(&inode->i_rwsem);
+	res = fsnotify_file_perm(file, MAY_READ);
+	if (res)
+		goto out;
+
+	res = down_read_killable(&inode->i_rwsem);
 	if (res)
 		goto out;
 
 	res = -ENOENT;
 	if (!IS_DEADDIR(inode)) {
 		ctx->pos = file->f_pos;
-		if (shared)
-			res = file->f_op->iterate_shared(file, ctx);
-		else
-			res = file->f_op->iterate(file, ctx);
+		res = file->f_op->iterate_shared(file, ctx);
 		file->f_pos = ctx->pos;
 		fsnotify_access(file);
 		file_accessed(file);
 	}
-	if (shared)
-		inode_unlock_shared(inode);
-	else
-		inode_unlock(inode);
+	inode_unlock_shared(inode);
 out:
 	return res;
 }
@@ -131,7 +169,7 @@ struct old_linux_dirent {
 	unsigned long	d_ino;
 	unsigned long	d_offset;
 	unsigned short	d_namlen;
-	char		d_name[1];
+	char		d_name[];
 };
 
 struct readdir_callback {
@@ -181,20 +219,19 @@ SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
 		struct old_linux_dirent __user *, dirent, unsigned int, count)
 {
 	int error;
-	struct fd f = fdget_pos(fd);
+	CLASS(fd_pos, f)(fd);
 	struct readdir_callback buf = {
 		.ctx.actor = fillonedir,
 		.dirent = dirent
 	};
 
-	if (!f.file)
+	if (fd_empty(f))
 		return -EBADF;
 
-	error = iterate_dir(f.file, &buf.ctx);
+	error = iterate_dir(fd_file(f), &buf.ctx);
 	if (buf.result)
 		error = buf.result;
 
-	fdput_pos(f);
 	return error;
 }
 
@@ -208,7 +245,7 @@ struct linux_dirent {
 	unsigned long	d_ino;
 	unsigned long	d_off;
 	unsigned short	d_reclen;
-	char		d_name[1];
+	char		d_name[];
 };
 
 struct getdents_callback {
@@ -271,7 +308,7 @@ efault:
 SYSCALL_DEFINE3(getdents, unsigned int, fd,
 		struct linux_dirent __user *, dirent, unsigned int, count)
 {
-	struct fd f;
+	CLASS(fd_pos, f)(fd);
 	struct getdents_callback buf = {
 		.ctx.actor = filldir,
 		.count = count,
@@ -279,11 +316,10 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
 	};
 	int error;
 
-	f = fdget_pos(fd);
-	if (!f.file)
+	if (fd_empty(f))
 		return -EBADF;
 
-	error = iterate_dir(f.file, &buf.ctx);
+	error = iterate_dir(fd_file(f), &buf.ctx);
 	if (error >= 0)
 		error = buf.error;
 	if (buf.prev_reclen) {
@@ -295,7 +331,6 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
 		else
 			error = count - buf.count;
 	}
-	fdput_pos(f);
 	return error;
 }
 
@@ -354,7 +389,7 @@ efault:
 SYSCALL_DEFINE3(getdents64, unsigned int, fd,
 		struct linux_dirent64 __user *, dirent, unsigned int, count)
 {
-	struct fd f;
+	CLASS(fd_pos, f)(fd);
 	struct getdents_callback64 buf = {
 		.ctx.actor = filldir64,
 		.count = count,
@@ -362,11 +397,10 @@ SYSCALL_DEFINE3(getdents64, unsigned int, fd,
 	};
 	int error;
 
-	f = fdget_pos(fd);
-	if (!f.file)
+	if (fd_empty(f))
 		return -EBADF;
 
-	error = iterate_dir(f.file, &buf.ctx);
+	error = iterate_dir(fd_file(f), &buf.ctx);
 	if (error >= 0)
 		error = buf.error;
 	if (buf.prev_reclen) {
@@ -379,7 +413,6 @@ SYSCALL_DEFINE3(getdents64, unsigned int, fd,
 		else
 			error = count - buf.count;
 	}
-	fdput_pos(f);
 	return error;
 }
 
@@ -388,7 +421,7 @@ struct compat_old_linux_dirent {
 	compat_ulong_t	d_ino;
 	compat_ulong_t	d_offset;
 	unsigned short	d_namlen;
-	char		d_name[1];
+	char		d_name[];
 };
 
 struct compat_readdir_callback {
@@ -439,20 +472,19 @@ COMPAT_SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
 		struct compat_old_linux_dirent __user *, dirent, unsigned int, count)
 {
 	int error;
-	struct fd f = fdget_pos(fd);
+	CLASS(fd_pos, f)(fd);
 	struct compat_readdir_callback buf = {
 		.ctx.actor = compat_fillonedir,
 		.dirent = dirent
 	};
 
-	if (!f.file)
+	if (fd_empty(f))
 		return -EBADF;
 
-	error = iterate_dir(f.file, &buf.ctx);
+	error = iterate_dir(fd_file(f), &buf.ctx);
 	if (buf.result)
 		error = buf.result;
 
-	fdput_pos(f);
 	return error;
 }
 
@@ -460,7 +492,7 @@ struct compat_linux_dirent {
 	compat_ulong_t	d_ino;
 	compat_ulong_t	d_off;
 	unsigned short	d_reclen;
-	char		d_name[1];
+	char		d_name[];
 };
 
 struct compat_getdents_callback {
@@ -522,7 +554,7 @@ efault:
 COMPAT_SYSCALL_DEFINE3(getdents, unsigned int, fd,
 		struct compat_linux_dirent __user *, dirent, unsigned int, count)
 {
-	struct fd f;
+	CLASS(fd_pos, f)(fd);
 	struct compat_getdents_callback buf = {
 		.ctx.actor = compat_filldir,
 		.current_dir = dirent,
@@ -530,11 +562,10 @@ COMPAT_SYSCALL_DEFINE3(getdents, unsigned int, fd,
 	};
 	int error;
 
-	f = fdget_pos(fd);
-	if (!f.file)
+	if (fd_empty(f))
 		return -EBADF;
 
-	error = iterate_dir(f.file, &buf.ctx);
+	error = iterate_dir(fd_file(f), &buf.ctx);
 	if (error >= 0)
 		error = buf.error;
 	if (buf.prev_reclen) {
@@ -546,7 +577,6 @@ COMPAT_SYSCALL_DEFINE3(getdents, unsigned int, fd,
 		else
 			error = count - buf.count;
 	}
-	fdput_pos(f);
 	return error;
 }
 #endif

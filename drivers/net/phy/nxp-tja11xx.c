@@ -414,10 +414,8 @@ static void tja11xx_get_strings(struct phy_device *phydev, u8 *data)
 {
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(tja11xx_hw_stats); i++) {
-		strncpy(data + i * ETH_GSTRING_LEN,
-			tja11xx_hw_stats[i].string, ETH_GSTRING_LEN);
-	}
+	for (i = 0; i < ARRAY_SIZE(tja11xx_hw_stats); i++)
+		ethtool_puts(&data, tja11xx_hw_stats[i].string);
 }
 
 static void tja11xx_get_stats(struct phy_device *phydev,
@@ -477,7 +475,7 @@ static umode_t tja11xx_hwmon_is_visible(const void *data,
 	return 0;
 }
 
-static const struct hwmon_channel_info *tja11xx_hwmon_info[] = {
+static const struct hwmon_channel_info * const tja11xx_hwmon_info[] = {
 	HWMON_CHANNEL_INFO(in, HWMON_I_LCRIT_ALARM),
 	HWMON_CHANNEL_INFO(temp, HWMON_T_CRIT_ALARM),
 	NULL
@@ -890,7 +888,7 @@ static struct phy_driver tja11xx_driver[] = {
 
 module_phy_driver(tja11xx_driver);
 
-static struct mdio_device_id __maybe_unused tja11xx_tbl[] = {
+static const struct mdio_device_id __maybe_unused tja11xx_tbl[] = {
 	{ PHY_ID_MATCH_MODEL(PHY_ID_TJA1100) },
 	{ PHY_ID_MATCH_MODEL(PHY_ID_TJA1101) },
 	{ PHY_ID_MATCH_MODEL(PHY_ID_TJA1102) },

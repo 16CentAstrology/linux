@@ -15,8 +15,7 @@
 #include <linux/platform_device.h>
 #include <linux/spi/spi.h>
 #include <linux/acpi.h>
-#include <linux/gpio.h>
-#include <linux/of_gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/mutex.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -396,6 +395,7 @@ bool rt5682_volatile_register(struct device *dev, unsigned int reg)
 	case RT5682_4BTN_IL_CMD_1:
 	case RT5682_AJD1_CTRL:
 	case RT5682_HP_CALIB_CTRL_1:
+	case RT5682_INT_DEVICE_ID:
 	case RT5682_DEVICE_ID:
 	case RT5682_I2C_MODE:
 	case RT5682_HP_CALIB_CTRL_10:
@@ -420,6 +420,7 @@ bool rt5682_readable_register(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
 	case RT5682_RESET:
+	case RT5682_INT_DEVICE_ID:
 	case RT5682_VERSION_ID:
 	case RT5682_VENDOR_ID:
 	case RT5682_DEVICE_ID:
@@ -1017,6 +1018,9 @@ static int rt5682_set_jack_detect(struct snd_soc_component *component,
 
 	rt5682->hs_jack = hs_jack;
 
+	if (rt5682->is_sdw && !rt5682->first_hw_init)
+		return 0;
+
 	if (!hs_jack) {
 		regmap_update_bits(rt5682->regmap, RT5682_IRQ_CTRL_2,
 			RT5682_JD1_EN_MASK, RT5682_JD1_DIS);
@@ -1094,8 +1098,8 @@ void rt5682_jack_detect_handler(struct work_struct *work)
 	struct snd_soc_dapm_context *dapm;
 	int val, btn_type;
 
-	if (!rt5682->component || !rt5682->component->card ||
-	    !rt5682->component->card->instantiated) {
+	if (!rt5682->component ||
+	    !snd_soc_card_is_instantiated(rt5682->component->card)) {
 		/* card not yet ready, try later */
 		mod_delayed_work(system_power_efficient_wq,
 				 &rt5682->jack_detect_work, msecs_to_jiffies(15));
@@ -2901,8 +2905,10 @@ int rt5682_register_dai_clks(struct rt5682_priv *rt5682)
 		}
 
 		if (dev->of_node) {
-			devm_of_clk_add_hw_provider(dev, of_clk_hw_simple_get,
+			ret = devm_of_clk_add_hw_provider(dev, of_clk_hw_simple_get,
 						    dai_clk_hw);
+			if (ret)
+				return ret;
 		} else {
 			ret = devm_clk_hw_register_clkdev(dev, dai_clk_hw,
 							  init.name,
@@ -2958,6 +2964,9 @@ static int rt5682_suspend(struct snd_soc_component *component)
 
 	if (rt5682->is_sdw)
 		return 0;
+
+	if (rt5682->irq)
+		disable_irq(rt5682->irq);
 
 	cancel_delayed_work_sync(&rt5682->jack_detect_work);
 	cancel_delayed_work_sync(&rt5682->jd_check_work);
@@ -3027,6 +3036,9 @@ static int rt5682_resume(struct snd_soc_component *component)
 	mod_delayed_work(system_power_efficient_wq,
 		&rt5682->jack_detect_work, msecs_to_jiffies(0));
 
+	if (rt5682->irq)
+		enable_irq(rt5682->irq);
+
 	return 0;
 }
 #else
@@ -3085,9 +3097,6 @@ int rt5682_parse_dt(struct rt5682_priv *rt5682, struct device *dev)
 	device_property_read_u32(dev, "realtek,dmic-delay-ms",
 		&rt5682->pdata.dmic_delay);
 
-	rt5682->pdata.ldo1_en = of_get_named_gpio(dev->of_node,
-		"realtek,ldo1-en-gpios", 0);
-
 	if (device_property_read_string_array(dev, "clock-output-names",
 					      rt5682->pdata.dai_clk_names,
 					      RT5682_DAI_NUM_CLKS) < 0)
@@ -3101,6 +3110,20 @@ int rt5682_parse_dt(struct rt5682_priv *rt5682, struct device *dev)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(rt5682_parse_dt);
+
+int rt5682_get_ldo1(struct rt5682_priv *rt5682, struct device *dev)
+{
+	rt5682->ldo1_en = devm_gpiod_get_optional(dev,
+						  "realtek,ldo1-en",
+						  GPIOD_OUT_HIGH);
+	if (IS_ERR(rt5682->ldo1_en)) {
+		dev_err(dev, "Fail gpio request ldo1_en\n");
+		return PTR_ERR(rt5682->ldo1_en);
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(rt5682_get_ldo1);
 
 void rt5682_calibrate(struct rt5682_priv *rt5682)
 {
@@ -3118,7 +3141,10 @@ void rt5682_calibrate(struct rt5682_priv *rt5682)
 	regmap_write(rt5682->regmap, RT5682_PWR_DIG_1, 0x0100);
 	regmap_write(rt5682->regmap, RT5682_HP_IMP_SENS_CTRL_19, 0x3800);
 	regmap_write(rt5682->regmap, RT5682_CHOP_DAC, 0x3000);
-	regmap_write(rt5682->regmap, RT5682_CALIB_ADC_CTRL, 0x7005);
+	if (rt5682->ve_ic)
+		regmap_write(rt5682->regmap, RT5682_CHOP_ADC, 0x7005);
+	else
+		regmap_write(rt5682->regmap, RT5682_CALIB_ADC_CTRL, 0x7005);
 	regmap_write(rt5682->regmap, RT5682_STO1_ADC_MIXER, 0x686c);
 	regmap_write(rt5682->regmap, RT5682_CAL_REC, 0x0d0d);
 	regmap_write(rt5682->regmap, RT5682_HP_CALIB_CTRL_2, 0x0321);
@@ -3147,7 +3173,10 @@ void rt5682_calibrate(struct rt5682_priv *rt5682)
 	regmap_write(rt5682->regmap, RT5682_GLB_CLK, 0x0000);
 	regmap_write(rt5682->regmap, RT5682_PWR_DIG_1, 0x0000);
 	regmap_write(rt5682->regmap, RT5682_CHOP_DAC, 0x2000);
-	regmap_write(rt5682->regmap, RT5682_CALIB_ADC_CTRL, 0x2005);
+	if (rt5682->ve_ic)
+		regmap_write(rt5682->regmap, RT5682_CHOP_ADC, 0x2005);
+	else
+		regmap_write(rt5682->regmap, RT5682_CALIB_ADC_CTRL, 0x2005);
 	regmap_write(rt5682->regmap, RT5682_STO1_ADC_MIXER, 0xc0c4);
 	regmap_write(rt5682->regmap, RT5682_CAL_REC, 0x0c0c);
 

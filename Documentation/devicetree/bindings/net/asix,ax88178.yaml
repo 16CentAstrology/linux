@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/net/asix,ax88178.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: The device tree bindings for the USB Ethernet controllers
+title: ASIX AX88172/AX88772 USB Ethernet Controllers
 
 maintainers:
   - Oleksij Rempel <o.rempel@pengutronix.de>
@@ -63,8 +63,8 @@ examples:
             #size-cells = <0>;
 
             ethernet@1 {
-               compatible = "usbb95,772b";
-               reg = <1>;
+                compatible = "usbb95,772b";
+                reg = <1>;
             };
         };
     };

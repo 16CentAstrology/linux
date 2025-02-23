@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/crypto/st,stm32-cryp.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: STMicroelectronics STM32 CRYP bindings
+title: STMicroelectronics STM32 CRYP
 
 description: The STM32 CRYP block is built on the CRYP block found in
   the STn8820 SoC introduced in 2007, and subsequently used in the U8500
@@ -45,6 +45,10 @@ properties:
 
   power-domains:
     maxItems: 1
+
+  access-controllers:
+    minItems: 1
+    maxItems: 2
 
 required:
   - compatible

@@ -10,7 +10,7 @@
  *	Safe accesses to vmalloc/direct-mapped discontiguous areas, Kanoj Sarcar <kanoj@sgi.com>
  */
 
-#include <linux/crash_core.h>
+#include <linux/vmcore_info.h>
 #include <linux/mm.h>
 #include <linux/proc_fs.h>
 #include <linux/kcore.h>
@@ -24,7 +24,7 @@
 #include <linux/memblock.h>
 #include <linux/init.h>
 #include <linux/slab.h>
-#include <linux/uaccess.h>
+#include <linux/uio.h>
 #include <asm/io.h>
 #include <linux/list.h>
 #include <linux/ioport.h>
@@ -50,8 +50,26 @@ static struct proc_dir_entry *proc_root_kcore;
 #define	kc_offset_to_vaddr(o) ((o) + PAGE_OFFSET)
 #endif
 
+#ifndef kc_xlate_dev_mem_ptr
+#define kc_xlate_dev_mem_ptr kc_xlate_dev_mem_ptr
+static inline void *kc_xlate_dev_mem_ptr(phys_addr_t phys)
+{
+	return __va(phys);
+}
+#endif
+#ifndef kc_unxlate_dev_mem_ptr
+#define kc_unxlate_dev_mem_ptr kc_unxlate_dev_mem_ptr
+static inline void kc_unxlate_dev_mem_ptr(phys_addr_t phys, void *virt)
+{
+}
+#endif
+
 static LIST_HEAD(kclist_head);
-static DECLARE_RWSEM(kclist_lock);
+static int kcore_nphdr;
+static size_t kcore_phdrs_len;
+static size_t kcore_notes_len;
+static size_t kcore_data_offset;
+DEFINE_STATIC_PERCPU_RWSEM(kclist_lock);
 static int kcore_need_update = 1;
 
 /*
@@ -87,33 +105,32 @@ void __init kclist_add(struct kcore_list *new, void *addr, size_t size,
 	list_add_tail(&new->list, &kclist_head);
 }
 
-static size_t get_kcore_size(int *nphdr, size_t *phdrs_len, size_t *notes_len,
-			     size_t *data_offset)
+static void update_kcore_size(void)
 {
 	size_t try, size;
 	struct kcore_list *m;
 
-	*nphdr = 1; /* PT_NOTE */
+	kcore_nphdr = 1; /* PT_NOTE */
 	size = 0;
 
 	list_for_each_entry(m, &kclist_head, list) {
 		try = kc_vaddr_to_offset((size_t)m->addr + m->size);
 		if (try > size)
 			size = try;
-		*nphdr = *nphdr + 1;
+		kcore_nphdr++;
 	}
 
-	*phdrs_len = *nphdr * sizeof(struct elf_phdr);
-	*notes_len = (4 * sizeof(struct elf_note) +
-		      3 * ALIGN(sizeof(CORE_STR), 4) +
-		      VMCOREINFO_NOTE_NAME_BYTES +
-		      ALIGN(sizeof(struct elf_prstatus), 4) +
-		      ALIGN(sizeof(struct elf_prpsinfo), 4) +
-		      ALIGN(arch_task_struct_size, 4) +
-		      ALIGN(vmcoreinfo_size, 4));
-	*data_offset = PAGE_ALIGN(sizeof(struct elfhdr) + *phdrs_len +
-				  *notes_len);
-	return *data_offset + size;
+	kcore_phdrs_len = kcore_nphdr * sizeof(struct elf_phdr);
+	kcore_notes_len = (4 * sizeof(struct elf_note) +
+			   3 * ALIGN(sizeof(CORE_STR), 4) +
+			   VMCOREINFO_NOTE_NAME_BYTES +
+			   ALIGN(sizeof(struct elf_prstatus), 4) +
+			   ALIGN(sizeof(struct elf_prpsinfo), 4) +
+			   ALIGN(arch_task_struct_size, 4) +
+			   ALIGN(vmcoreinfo_size, 4));
+	kcore_data_offset = PAGE_ALIGN(sizeof(struct elfhdr) + kcore_phdrs_len +
+				       kcore_notes_len);
+	proc_root_kcore->size = kcore_data_offset + size;
 }
 
 #ifdef CONFIG_HIGHMEM
@@ -199,7 +216,7 @@ kclist_add_private(unsigned long pfn, unsigned long nr_pages, void *arg)
 	ent->addr = (unsigned long)page_to_virt(p);
 	ent->size = nr_pages << PAGE_SHIFT;
 
-	if (!virt_addr_valid(ent->addr))
+	if (!virt_addr_valid((void *)ent->addr))
 		goto free_out;
 
 	/* cut not-mapped area. ....from ppc-32 code. */
@@ -235,7 +252,7 @@ static int kcore_ram_list(struct list_head *list)
 	int nid, ret;
 	unsigned long end_pfn;
 
-	/* Not inialized....update now */
+	/* Not initialized....update now */
 	/* find out "max pfn" */
 	end_pfn = 0;
 	for_each_node_state(nid, N_MEMORY) {
@@ -256,12 +273,10 @@ static int kcore_update_ram(void)
 {
 	LIST_HEAD(list);
 	LIST_HEAD(garbage);
-	int nphdr;
-	size_t phdrs_len, notes_len, data_offset;
 	struct kcore_list *tmp, *pos;
 	int ret = 0;
 
-	down_write(&kclist_lock);
+	percpu_down_write(&kclist_lock);
 	if (!xchg(&kcore_need_update, 0))
 		goto out;
 
@@ -279,11 +294,10 @@ static int kcore_update_ram(void)
 	}
 	list_splice_tail(&list, &kclist_head);
 
-	proc_root_kcore->size = get_kcore_size(&nphdr, &phdrs_len, &notes_len,
-					       &data_offset);
+	update_kcore_size();
 
 out:
-	up_write(&kclist_lock);
+	percpu_up_write(&kclist_lock);
 	list_for_each_entry_safe(pos, tmp, &garbage, list) {
 		list_del(&pos->list);
 		kfree(pos);
@@ -307,30 +321,29 @@ static void append_kcore_note(char *notes, size_t *i, const char *name,
 	*i = ALIGN(*i + descsz, 4);
 }
 
-static ssize_t
-read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
+static ssize_t read_kcore_iter(struct kiocb *iocb, struct iov_iter *iter)
 {
+	struct file *file = iocb->ki_filp;
 	char *buf = file->private_data;
-	size_t phdrs_offset, notes_offset, data_offset;
+	loff_t *fpos = &iocb->ki_pos;
+	size_t phdrs_offset, notes_offset;
 	size_t page_offline_frozen = 1;
-	size_t phdrs_len, notes_len;
 	struct kcore_list *m;
 	size_t tsz;
-	int nphdr;
 	unsigned long start;
+	size_t buflen = iov_iter_count(iter);
 	size_t orig_buflen = buflen;
 	int ret = 0;
 
-	down_read(&kclist_lock);
+	percpu_down_read(&kclist_lock);
 	/*
 	 * Don't race against drivers that set PageOffline() and expect no
 	 * further page access.
 	 */
 	page_offline_freeze();
 
-	get_kcore_size(&nphdr, &phdrs_len, &notes_len, &data_offset);
 	phdrs_offset = sizeof(struct elfhdr);
-	notes_offset = phdrs_offset + phdrs_len;
+	notes_offset = phdrs_offset + kcore_phdrs_len;
 
 	/* ELF file header. */
 	if (buflen && *fpos < sizeof(struct elfhdr)) {
@@ -352,25 +365,24 @@ read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
 			.e_flags = ELF_CORE_EFLAGS,
 			.e_ehsize = sizeof(struct elfhdr),
 			.e_phentsize = sizeof(struct elf_phdr),
-			.e_phnum = nphdr,
+			.e_phnum = kcore_nphdr,
 		};
 
 		tsz = min_t(size_t, buflen, sizeof(struct elfhdr) - *fpos);
-		if (copy_to_user(buffer, (char *)&ehdr + *fpos, tsz)) {
+		if (copy_to_iter((char *)&ehdr + *fpos, tsz, iter) != tsz) {
 			ret = -EFAULT;
 			goto out;
 		}
 
-		buffer += tsz;
 		buflen -= tsz;
 		*fpos += tsz;
 	}
 
 	/* ELF program headers. */
-	if (buflen && *fpos < phdrs_offset + phdrs_len) {
+	if (buflen && *fpos < phdrs_offset + kcore_phdrs_len) {
 		struct elf_phdr *phdrs, *phdr;
 
-		phdrs = kzalloc(phdrs_len, GFP_KERNEL);
+		phdrs = kzalloc(kcore_phdrs_len, GFP_KERNEL);
 		if (!phdrs) {
 			ret = -ENOMEM;
 			goto out;
@@ -378,13 +390,14 @@ read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
 
 		phdrs[0].p_type = PT_NOTE;
 		phdrs[0].p_offset = notes_offset;
-		phdrs[0].p_filesz = notes_len;
+		phdrs[0].p_filesz = kcore_notes_len;
 
 		phdr = &phdrs[1];
 		list_for_each_entry(m, &kclist_head, list) {
 			phdr->p_type = PT_LOAD;
 			phdr->p_flags = PF_R | PF_W | PF_X;
-			phdr->p_offset = kc_vaddr_to_offset(m->addr) + data_offset;
+			phdr->p_offset = kc_vaddr_to_offset(m->addr)
+					 + kcore_data_offset;
 			phdr->p_vaddr = (size_t)m->addr;
 			if (m->type == KCORE_RAM)
 				phdr->p_paddr = __pa(m->addr);
@@ -397,22 +410,22 @@ read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
 			phdr++;
 		}
 
-		tsz = min_t(size_t, buflen, phdrs_offset + phdrs_len - *fpos);
-		if (copy_to_user(buffer, (char *)phdrs + *fpos - phdrs_offset,
-				 tsz)) {
+		tsz = min_t(size_t, buflen,
+			    phdrs_offset + kcore_phdrs_len - *fpos);
+		if (copy_to_iter((char *)phdrs + *fpos - phdrs_offset, tsz,
+				 iter) != tsz) {
 			kfree(phdrs);
 			ret = -EFAULT;
 			goto out;
 		}
 		kfree(phdrs);
 
-		buffer += tsz;
 		buflen -= tsz;
 		*fpos += tsz;
 	}
 
 	/* ELF note segment. */
-	if (buflen && *fpos < notes_offset + notes_len) {
+	if (buflen && *fpos < notes_offset + kcore_notes_len) {
 		struct elf_prstatus prstatus = {};
 		struct elf_prpsinfo prpsinfo = {
 			.pr_sname = 'R',
@@ -421,10 +434,10 @@ read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
 		char *notes;
 		size_t i = 0;
 
-		strlcpy(prpsinfo.pr_psargs, saved_command_line,
+		strscpy(prpsinfo.pr_psargs, saved_command_line,
 			sizeof(prpsinfo.pr_psargs));
 
-		notes = kzalloc(notes_len, GFP_KERNEL);
+		notes = kzalloc(kcore_notes_len, GFP_KERNEL);
 		if (!notes) {
 			ret = -ENOMEM;
 			goto out;
@@ -445,17 +458,17 @@ read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
 		 */
 		append_kcore_note(notes, &i, VMCOREINFO_NOTE_NAME, 0,
 				  vmcoreinfo_data,
-				  min(vmcoreinfo_size, notes_len - i));
+				  min(vmcoreinfo_size, kcore_notes_len - i));
 
-		tsz = min_t(size_t, buflen, notes_offset + notes_len - *fpos);
-		if (copy_to_user(buffer, notes + *fpos - notes_offset, tsz)) {
+		tsz = min_t(size_t, buflen,
+			    notes_offset + kcore_notes_len - *fpos);
+		if (copy_to_iter(notes + *fpos - notes_offset, tsz, iter) != tsz) {
 			kfree(notes);
 			ret = -EFAULT;
 			goto out;
 		}
 		kfree(notes);
 
-		buffer += tsz;
 		buflen -= tsz;
 		*fpos += tsz;
 	}
@@ -464,7 +477,7 @@ read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
 	 * Check to see if our file offset matches with any of
 	 * the addresses in the elf_phdr on our list.
 	 */
-	start = kc_offset_to_vaddr(*fpos - data_offset);
+	start = kc_offset_to_vaddr(*fpos - kcore_data_offset);
 	if ((tsz = (PAGE_SIZE - (start & ~PAGE_MASK))) > buflen)
 		tsz = buflen;
 
@@ -472,19 +485,21 @@ read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
 	while (buflen) {
 		struct page *page;
 		unsigned long pfn;
+		phys_addr_t phys;
+		void *__start;
 
 		/*
 		 * If this is the first iteration or the address is not within
 		 * the previous entry, search for a matching entry.
 		 */
 		if (!m || start < m->addr || start >= m->addr + m->size) {
-			struct kcore_list *iter;
+			struct kcore_list *pos;
 
 			m = NULL;
-			list_for_each_entry(iter, &kclist_head, list) {
-				if (start >= iter->addr &&
-				    start < iter->addr + iter->size) {
-					m = iter;
+			list_for_each_entry(pos, &kclist_head, list) {
+				if (start >= pos->addr &&
+				    start < pos->addr + pos->size) {
+					m = pos;
 					break;
 				}
 			}
@@ -497,7 +512,7 @@ read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
 		}
 
 		if (!m) {
-			if (clear_user(buffer, tsz)) {
+			if (iov_iter_zero(tsz, iter) != tsz) {
 				ret = -EFAULT;
 				goto out;
 			}
@@ -506,22 +521,40 @@ read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
 
 		switch (m->type) {
 		case KCORE_VMALLOC:
-			vread(buf, (char *)start, tsz);
-			/* we have to zero-fill user buffer even if no read */
-			if (copy_to_user(buffer, buf, tsz)) {
-				ret = -EFAULT;
-				goto out;
+		{
+			const char *src = (char *)start;
+			size_t read = 0, left = tsz;
+
+			/*
+			 * vmalloc uses spinlocks, so we optimistically try to
+			 * read memory. If this fails, fault pages in and try
+			 * again until we are done.
+			 */
+			while (true) {
+				read += vread_iter(iter, src, left);
+				if (read == tsz)
+					break;
+
+				src += read;
+				left -= read;
+
+				if (fault_in_iov_iter_writeable(iter, left)) {
+					ret = -EFAULT;
+					goto out;
+				}
 			}
 			break;
+		}
 		case KCORE_USER:
 			/* User page is handled prior to normal kernel page: */
-			if (copy_to_user(buffer, (char *)start, tsz)) {
+			if (copy_to_iter((char *)start, tsz, iter) != tsz) {
 				ret = -EFAULT;
 				goto out;
 			}
 			break;
 		case KCORE_RAM:
-			pfn = __pa(start) >> PAGE_SHIFT;
+			phys = __pa(start);
+			pfn =  phys >> PAGE_SHIFT;
 			page = pfn_to_online_page(pfn);
 
 			/*
@@ -530,8 +563,9 @@ read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
 			 * and explicitly excluded physical ranges.
 			 */
 			if (!page || PageOffline(page) ||
-			    is_page_hwpoison(page) || !pfn_is_ram(pfn)) {
-				if (clear_user(buffer, tsz)) {
+			    is_page_hwpoison(page) || !pfn_is_ram(pfn) ||
+			    pfn_is_unaccepted_memory(pfn)) {
+				if (iov_iter_zero(tsz, iter) != tsz) {
 					ret = -EFAULT;
 					goto out;
 				}
@@ -540,25 +574,45 @@ read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
 			fallthrough;
 		case KCORE_VMEMMAP:
 		case KCORE_TEXT:
-			/*
-			 * Using bounce buffer to bypass the
-			 * hardened user copy kernel text checks.
-			 */
-			if (copy_from_kernel_nofault(buf, (void *)start, tsz)) {
-				if (clear_user(buffer, tsz)) {
-					ret = -EFAULT;
+			if (m->type == KCORE_RAM) {
+				__start = kc_xlate_dev_mem_ptr(phys);
+				if (!__start) {
+					ret = -ENOMEM;
+					if (iov_iter_zero(tsz, iter) != tsz)
+						ret = -EFAULT;
 					goto out;
 				}
 			} else {
-				if (copy_to_user(buffer, buf, tsz)) {
+				__start = (void *)start;
+			}
+
+			/*
+			 * Sadly we must use a bounce buffer here to be able to
+			 * make use of copy_from_kernel_nofault(), as these
+			 * memory regions might not always be mapped on all
+			 * architectures.
+			 */
+			ret = copy_from_kernel_nofault(buf, __start, tsz);
+			if (m->type == KCORE_RAM)
+				kc_unxlate_dev_mem_ptr(phys, __start);
+			if (ret) {
+				if (iov_iter_zero(tsz, iter) != tsz) {
 					ret = -EFAULT;
 					goto out;
 				}
+				ret = 0;
+			/*
+			 * We know the bounce buffer is safe to copy from, so
+			 * use _copy_to_iter() directly.
+			 */
+			} else if (_copy_to_iter(buf, tsz, iter) != tsz) {
+				ret = -EFAULT;
+				goto out;
 			}
 			break;
 		default:
 			pr_warn_once("Unhandled KCORE type: %d\n", m->type);
-			if (clear_user(buffer, tsz)) {
+			if (iov_iter_zero(tsz, iter) != tsz) {
 				ret = -EFAULT;
 				goto out;
 			}
@@ -566,14 +620,13 @@ read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
 skip:
 		buflen -= tsz;
 		*fpos += tsz;
-		buffer += tsz;
 		start += tsz;
 		tsz = (buflen > PAGE_SIZE ? PAGE_SIZE : buflen);
 	}
 
 out:
 	page_offline_thaw();
-	up_read(&kclist_lock);
+	percpu_up_read(&kclist_lock);
 	if (ret)
 		return ret;
 	return orig_buflen - buflen;
@@ -610,7 +663,8 @@ static int release_kcore(struct inode *inode, struct file *file)
 }
 
 static const struct proc_ops kcore_proc_ops = {
-	.proc_read	= read_kcore,
+	.proc_flags	= PROC_ENTRY_PERMANENT,
+	.proc_read_iter	= read_kcore_iter,
 	.proc_open	= open_kcore,
 	.proc_release	= release_kcore,
 	.proc_lseek	= default_llseek,

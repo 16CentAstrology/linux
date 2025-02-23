@@ -68,7 +68,7 @@ void p_info(const char *fmt, ...)
 	va_end(ap);
 }
 
-static bool is_bpffs(char *path)
+static bool is_bpffs(const char *path)
 {
 	struct statfs st_fs;
 
@@ -244,25 +244,100 @@ int open_obj_pinned_any(const char *path, enum bpf_obj_type exp_type)
 	return fd;
 }
 
-int mount_bpffs_for_pin(const char *name)
+int create_and_mount_bpffs_dir(const char *dir_name)
 {
 	char err_str[ERR_MAX_LEN];
-	char *file;
+	bool dir_exists;
+	int err = 0;
+
+	if (is_bpffs(dir_name))
+		return err;
+
+	dir_exists = access(dir_name, F_OK) == 0;
+
+	if (!dir_exists) {
+		char *temp_name;
+		char *parent_name;
+
+		temp_name = strdup(dir_name);
+		if (!temp_name) {
+			p_err("mem alloc failed");
+			return -1;
+		}
+
+		parent_name = dirname(temp_name);
+
+		if (is_bpffs(parent_name)) {
+			/* nothing to do if already mounted */
+			free(temp_name);
+			return err;
+		}
+
+		if (access(parent_name, F_OK) == -1) {
+			p_err("can't create dir '%s' to pin BPF object: parent dir '%s' doesn't exist",
+			      dir_name, parent_name);
+			free(temp_name);
+			return -1;
+		}
+
+		free(temp_name);
+	}
+
+	if (block_mount) {
+		p_err("no BPF file system found, not mounting it due to --nomount option");
+		return -1;
+	}
+
+	if (!dir_exists) {
+		err = mkdir(dir_name, S_IRWXU);
+		if (err) {
+			p_err("failed to create dir '%s': %s", dir_name, strerror(errno));
+			return err;
+		}
+	}
+
+	err = mnt_fs(dir_name, "bpf", err_str, ERR_MAX_LEN);
+	if (err) {
+		err_str[ERR_MAX_LEN - 1] = '\0';
+		p_err("can't mount BPF file system on given dir '%s': %s",
+		      dir_name, err_str);
+
+		if (!dir_exists)
+			rmdir(dir_name);
+	}
+
+	return err;
+}
+
+int mount_bpffs_for_file(const char *file_name)
+{
+	char err_str[ERR_MAX_LEN];
+	char *temp_name;
 	char *dir;
 	int err = 0;
 
-	file = malloc(strlen(name) + 1);
-	if (!file) {
+	if (access(file_name, F_OK) != -1) {
+		p_err("can't pin BPF object: path '%s' already exists", file_name);
+		return -1;
+	}
+
+	temp_name = strdup(file_name);
+	if (!temp_name) {
 		p_err("mem alloc failed");
 		return -1;
 	}
 
-	strcpy(file, name);
-	dir = dirname(file);
+	dir = dirname(temp_name);
 
 	if (is_bpffs(dir))
 		/* nothing to do if already mounted */
 		goto out_free;
+
+	if (access(dir, F_OK) == -1) {
+		p_err("can't pin BPF object: dir '%s' doesn't exist", dir);
+		err = -1;
+		goto out_free;
+	}
 
 	if (block_mount) {
 		p_err("no BPF file system found, not mounting it due to --nomount option");
@@ -273,12 +348,12 @@ int mount_bpffs_for_pin(const char *name)
 	err = mnt_fs(dir, "bpf", err_str, ERR_MAX_LEN);
 	if (err) {
 		err_str[ERR_MAX_LEN - 1] = '\0';
-		p_err("can't mount BPF file system to pin the object (%s): %s",
-		      name, err_str);
+		p_err("can't mount BPF file system to pin the object '%s': %s",
+		      file_name, err_str);
 	}
 
 out_free:
-	free(file);
+	free(temp_name);
 	return err;
 }
 
@@ -286,7 +361,7 @@ int do_pin_fd(int fd, const char *name)
 {
 	int err;
 
-	err = mount_bpffs_for_pin(name);
+	err = mount_bpffs_for_file(name);
 	if (err)
 		return err;
 
@@ -335,7 +410,7 @@ void get_prog_full_name(const struct bpf_prog_info *prog_info, int prog_fd,
 {
 	const char *prog_name = prog_info->name;
 	const struct btf_type *func_type;
-	const struct bpf_func_info finfo = {};
+	struct bpf_func_info finfo = {};
 	struct bpf_prog_info info = {};
 	__u32 info_len = sizeof(info);
 	struct btf *prog_btf = NULL;
@@ -353,7 +428,7 @@ void get_prog_full_name(const struct bpf_prog_info *prog_info, int prog_fd,
 		info.func_info_rec_size = sizeof(finfo);
 	info.func_info = ptr_to_u64(&finfo);
 
-	if (bpf_obj_get_info_by_fd(prog_fd, &info, &info_len))
+	if (bpf_prog_get_info_by_fd(prog_fd, &info, &info_len))
 		goto copy_name;
 
 	prog_btf = btf__load_from_kernel_by_id(info.btf_id);
@@ -488,7 +563,7 @@ static int do_build_table_cb(const char *fpath, const struct stat *sb,
 		goto out_close;
 
 	memset(&pinned_info, 0, sizeof(pinned_info));
-	if (bpf_obj_get_info_by_fd(fd, &pinned_info, &len))
+	if (bpf_prog_get_info_by_fd(fd, &pinned_info, &len))
 		goto out_close;
 
 	path = strdup(fpath);
@@ -756,7 +831,7 @@ static int prog_fd_by_nametag(void *nametag, int **fds, bool tag)
 			goto err_close_fds;
 		}
 
-		err = bpf_obj_get_info_by_fd(fd, &info, &len);
+		err = bpf_prog_get_info_by_fd(fd, &info, &len);
 		if (err) {
 			p_err("can't get prog info (%u): %s",
 			      id, strerror(errno));
@@ -916,7 +991,7 @@ static int map_fd_by_name(char *name, int **fds)
 			goto err_close_fds;
 		}
 
-		err = bpf_obj_get_info_by_fd(fd, &info, &len);
+		err = bpf_map_get_info_by_fd(fd, &info, &len);
 		if (err) {
 			p_err("can't get map info (%u): %s",
 			      id, strerror(errno));
@@ -1026,7 +1101,8 @@ exit_free:
 	return fd;
 }
 
-int map_parse_fd_and_info(int *argc, char ***argv, void *info, __u32 *info_len)
+int map_parse_fd_and_info(int *argc, char ***argv, struct bpf_map_info *info,
+			  __u32 *info_len)
 {
 	int err;
 	int fd;
@@ -1035,7 +1111,7 @@ int map_parse_fd_and_info(int *argc, char ***argv, void *info, __u32 *info_len)
 	if (fd < 0)
 		return -1;
 
-	err = bpf_obj_get_info_by_fd(fd, info, info_len);
+	err = bpf_map_get_info_by_fd(fd, info, info_len);
 	if (err) {
 		p_err("can't get map info: %s", strerror(errno));
 		close(fd);
@@ -1089,4 +1165,18 @@ const char *bpf_attach_type_input_str(enum bpf_attach_type t)
 	case BPF_SK_REUSEPORT_SELECT_OR_MIGRATE:	return "sk_skb_reuseport_select_or_migrate";
 	default:	return libbpf_bpf_attach_type_str(t);
 	}
+}
+
+int pathname_concat(char *buf, int buf_sz, const char *path,
+		    const char *name)
+{
+	int len;
+
+	len = snprintf(buf, buf_sz, "%s/%s", path, name);
+	if (len < 0)
+		return -EINVAL;
+	if (len >= buf_sz)
+		return -ENAMETOOLONG;
+
+	return 0;
 }

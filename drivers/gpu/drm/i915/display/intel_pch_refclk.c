@@ -3,6 +3,7 @@
  * Copyright © 2021 Intel Corporation
  */
 
+#include "i915_drv.h"
 #include "i915_reg.h"
 #include "intel_de.h"
 #include "intel_display_types.h"
@@ -12,19 +13,13 @@
 
 static void lpt_fdi_reset_mphy(struct drm_i915_private *dev_priv)
 {
-	u32 tmp;
-
-	tmp = intel_de_read(dev_priv, SOUTH_CHICKEN2);
-	tmp |= FDI_MPHY_IOSFSB_RESET_CTL;
-	intel_de_write(dev_priv, SOUTH_CHICKEN2, tmp);
+	intel_de_rmw(dev_priv, SOUTH_CHICKEN2, 0, FDI_MPHY_IOSFSB_RESET_CTL);
 
 	if (wait_for_us(intel_de_read(dev_priv, SOUTH_CHICKEN2) &
 			FDI_MPHY_IOSFSB_RESET_STATUS, 100))
 		drm_err(&dev_priv->drm, "FDI mPHY reset assert timeout\n");
 
-	tmp = intel_de_read(dev_priv, SOUTH_CHICKEN2);
-	tmp &= ~FDI_MPHY_IOSFSB_RESET_CTL;
-	intel_de_write(dev_priv, SOUTH_CHICKEN2, tmp);
+	intel_de_rmw(dev_priv, SOUTH_CHICKEN2, FDI_MPHY_IOSFSB_RESET_CTL, 0);
 
 	if (wait_for_us((intel_de_read(dev_priv, SOUTH_CHICKEN2) &
 			 FDI_MPHY_IOSFSB_RESET_STATUS) == 0, 100))
@@ -114,13 +109,13 @@ void lpt_disable_iclkip(struct drm_i915_private *dev_priv)
 
 	intel_de_write(dev_priv, PIXCLK_GATE, PIXCLK_GATE_GATE);
 
-	mutex_lock(&dev_priv->sb_lock);
+	intel_sbi_lock(dev_priv);
 
 	temp = intel_sbi_read(dev_priv, SBI_SSCCTL6, SBI_ICLK);
 	temp |= SBI_SSCCTL_DISABLE;
 	intel_sbi_write(dev_priv, SBI_SSCCTL6, temp, SBI_ICLK);
 
-	mutex_unlock(&dev_priv->sb_lock);
+	intel_sbi_unlock(dev_priv);
 }
 
 struct iclkip_params {
@@ -201,7 +196,7 @@ void lpt_program_iclkip(const struct intel_crtc_state *crtc_state)
 		    "iCLKIP clock: found settings for %dKHz refresh rate: auxdiv=%x, divsel=%x, phasedir=%x, phaseinc=%x\n",
 		    clock, p.auxdiv, p.divsel, p.phasedir, p.phaseinc);
 
-	mutex_lock(&dev_priv->sb_lock);
+	intel_sbi_lock(dev_priv);
 
 	/* Program SSCDIVINTPHASE6 */
 	temp = intel_sbi_read(dev_priv, SBI_SSCDIVINTPHASE6, SBI_ICLK);
@@ -224,7 +219,7 @@ void lpt_program_iclkip(const struct intel_crtc_state *crtc_state)
 	temp &= ~SBI_SSCCTL_DISABLE;
 	intel_sbi_write(dev_priv, SBI_SSCCTL6, temp, SBI_ICLK);
 
-	mutex_unlock(&dev_priv->sb_lock);
+	intel_sbi_unlock(dev_priv);
 
 	/* Wait for initialization time */
 	udelay(24);
@@ -242,11 +237,11 @@ int lpt_get_iclkip(struct drm_i915_private *dev_priv)
 
 	iclkip_params_init(&p);
 
-	mutex_lock(&dev_priv->sb_lock);
+	intel_sbi_lock(dev_priv);
 
 	temp = intel_sbi_read(dev_priv, SBI_SSCCTL6, SBI_ICLK);
 	if (temp & SBI_SSCCTL_DISABLE) {
-		mutex_unlock(&dev_priv->sb_lock);
+		intel_sbi_unlock(dev_priv);
 		return 0;
 	}
 
@@ -260,7 +255,7 @@ int lpt_get_iclkip(struct drm_i915_private *dev_priv)
 	p.auxdiv = (temp & SBI_SSCAUXDIV_FINALDIV2SEL_MASK) >>
 		SBI_SSCAUXDIV_FINALDIV2SEL_SHIFT;
 
-	mutex_unlock(&dev_priv->sb_lock);
+	intel_sbi_unlock(dev_priv);
 
 	p.desired_divisor = (p.divsel + 2) * p.iclk_pi_range + p.phaseinc;
 
@@ -285,7 +280,7 @@ static void lpt_enable_clkout_dp(struct drm_i915_private *dev_priv,
 		     with_fdi, "LP PCH doesn't have FDI\n"))
 		with_fdi = false;
 
-	mutex_lock(&dev_priv->sb_lock);
+	intel_sbi_lock(dev_priv);
 
 	tmp = intel_sbi_read(dev_priv, SBI_SSCCTL, SBI_ICLK);
 	tmp &= ~SBI_SSCCTL_DISABLE;
@@ -308,7 +303,7 @@ static void lpt_enable_clkout_dp(struct drm_i915_private *dev_priv,
 	tmp |= SBI_GEN0_CFG_BUFFENABLE_DISABLE;
 	intel_sbi_write(dev_priv, reg, tmp, SBI_ICLK);
 
-	mutex_unlock(&dev_priv->sb_lock);
+	intel_sbi_unlock(dev_priv);
 }
 
 /* Sequence to disable CLKOUT_DP */
@@ -316,7 +311,7 @@ void lpt_disable_clkout_dp(struct drm_i915_private *dev_priv)
 {
 	u32 reg, tmp;
 
-	mutex_lock(&dev_priv->sb_lock);
+	intel_sbi_lock(dev_priv);
 
 	reg = HAS_PCH_LPT_LP(dev_priv) ? SBI_GEN0 : SBI_DBUFF0;
 	tmp = intel_sbi_read(dev_priv, reg, SBI_ICLK);
@@ -334,7 +329,7 @@ void lpt_disable_clkout_dp(struct drm_i915_private *dev_priv)
 		intel_sbi_write(dev_priv, SBI_SSCCTL, tmp, SBI_ICLK);
 	}
 
-	mutex_unlock(&dev_priv->sb_lock);
+	intel_sbi_unlock(dev_priv);
 }
 
 #define BEND_IDX(steps) ((50 + (steps)) / 5)
@@ -380,7 +375,7 @@ static void lpt_bend_clkout_dp(struct drm_i915_private *dev_priv, int steps)
 	if (drm_WARN_ON(&dev_priv->drm, idx >= ARRAY_SIZE(sscdivintphase)))
 		return;
 
-	mutex_lock(&dev_priv->sb_lock);
+	intel_sbi_lock(dev_priv);
 
 	if (steps % 10 != 0)
 		tmp = 0xAAAAAAAB;
@@ -393,7 +388,7 @@ static void lpt_bend_clkout_dp(struct drm_i915_private *dev_priv, int steps)
 	tmp |= sscdivintphase[idx];
 	intel_sbi_write(dev_priv, SBI_SSCDIVINTPHASE, tmp, SBI_ICLK);
 
-	mutex_unlock(&dev_priv->sb_lock);
+	intel_sbi_unlock(dev_priv);
 }
 
 #undef BEND_IDX
@@ -429,7 +424,7 @@ static bool wrpll_uses_pch_ssc(struct drm_i915_private *dev_priv,
 	if ((ctl & WRPLL_REF_MASK) == WRPLL_REF_PCH_SSC)
 		return true;
 
-	if ((IS_BROADWELL(dev_priv) || IS_HSW_ULT(dev_priv)) &&
+	if ((IS_BROADWELL(dev_priv) || IS_HASWELL_ULT(dev_priv)) &&
 	    (ctl & WRPLL_REF_MASK) == WRPLL_REF_MUXED_SSC_BDW &&
 	    (fuse_strap & HSW_CPU_SSC_ENABLE) == 0)
 		return true;
@@ -467,24 +462,24 @@ static void lpt_init_pch_refclk(struct drm_i915_private *dev_priv)
 	 * clock hierarchy. That would also allow us to do
 	 * clock bending finally.
 	 */
-	dev_priv->pch_ssc_use = 0;
+	dev_priv->display.dpll.pch_ssc_use = 0;
 
 	if (spll_uses_pch_ssc(dev_priv)) {
 		drm_dbg_kms(&dev_priv->drm, "SPLL using PCH SSC\n");
-		dev_priv->pch_ssc_use |= BIT(DPLL_ID_SPLL);
+		dev_priv->display.dpll.pch_ssc_use |= BIT(DPLL_ID_SPLL);
 	}
 
 	if (wrpll_uses_pch_ssc(dev_priv, DPLL_ID_WRPLL1)) {
 		drm_dbg_kms(&dev_priv->drm, "WRPLL1 using PCH SSC\n");
-		dev_priv->pch_ssc_use |= BIT(DPLL_ID_WRPLL1);
+		dev_priv->display.dpll.pch_ssc_use |= BIT(DPLL_ID_WRPLL1);
 	}
 
 	if (wrpll_uses_pch_ssc(dev_priv, DPLL_ID_WRPLL2)) {
 		drm_dbg_kms(&dev_priv->drm, "WRPLL2 using PCH SSC\n");
-		dev_priv->pch_ssc_use |= BIT(DPLL_ID_WRPLL2);
+		dev_priv->display.dpll.pch_ssc_use |= BIT(DPLL_ID_WRPLL2);
 	}
 
-	if (dev_priv->pch_ssc_use)
+	if (dev_priv->display.dpll.pch_ssc_use)
 		return;
 
 	if (has_fdi) {
@@ -497,7 +492,9 @@ static void lpt_init_pch_refclk(struct drm_i915_private *dev_priv)
 
 static void ilk_init_pch_refclk(struct drm_i915_private *dev_priv)
 {
+	struct intel_display *display = &dev_priv->display;
 	struct intel_encoder *encoder;
+	struct intel_shared_dpll *pll;
 	int i;
 	u32 val, final;
 	bool has_lvds = false;
@@ -533,8 +530,10 @@ static void ilk_init_pch_refclk(struct drm_i915_private *dev_priv)
 	}
 
 	/* Check if any DPLLs are using the SSC source */
-	for (i = 0; i < dev_priv->display.dpll.num_shared_dpll; i++) {
-		u32 temp = intel_de_read(dev_priv, PCH_DPLL(i));
+	for_each_shared_dpll(dev_priv, pll, i) {
+		u32 temp;
+
+		temp = intel_de_read(dev_priv, PCH_DPLL(pll->info->id));
 
 		if (!(temp & DPLL_VCO_ENABLE))
 			continue;
@@ -575,11 +574,11 @@ static void ilk_init_pch_refclk(struct drm_i915_private *dev_priv)
 	if (has_panel) {
 		final |= DREF_SSC_SOURCE_ENABLE;
 
-		if (intel_panel_use_ssc(dev_priv) && can_ssc)
+		if (intel_panel_use_ssc(display) && can_ssc)
 			final |= DREF_SSC1_ENABLE;
 
 		if (has_cpu_edp) {
-			if (intel_panel_use_ssc(dev_priv) && can_ssc)
+			if (intel_panel_use_ssc(display) && can_ssc)
 				final |= DREF_CPU_SOURCE_OUTPUT_DOWNSPREAD;
 			else
 				final |= DREF_CPU_SOURCE_OUTPUT_NONSPREAD;
@@ -607,7 +606,7 @@ static void ilk_init_pch_refclk(struct drm_i915_private *dev_priv)
 		val |= DREF_SSC_SOURCE_ENABLE;
 
 		/* SSC must be turned on before enabling the CPU output  */
-		if (intel_panel_use_ssc(dev_priv) && can_ssc) {
+		if (intel_panel_use_ssc(display) && can_ssc) {
 			drm_dbg_kms(&dev_priv->drm, "Using SSC on panel\n");
 			val |= DREF_SSC1_ENABLE;
 		} else {
@@ -623,7 +622,7 @@ static void ilk_init_pch_refclk(struct drm_i915_private *dev_priv)
 
 		/* Enable CPU source on CPU attached eDP */
 		if (has_cpu_edp) {
-			if (intel_panel_use_ssc(dev_priv) && can_ssc) {
+			if (intel_panel_use_ssc(display) && can_ssc) {
 				drm_dbg_kms(&dev_priv->drm,
 					    "Using SSC on eDP\n");
 				val |= DREF_CPU_SOURCE_OUTPUT_DOWNSPREAD;

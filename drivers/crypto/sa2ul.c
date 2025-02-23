@@ -15,7 +15,8 @@
 #include <linux/dmapool.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 
@@ -573,7 +574,7 @@ static int sa_format_cmdl_gen(struct sa_cmdl_cfg *cfg, u8 *cmdl,
 	/* Clear the command label */
 	memzero_explicit(cmdl, (SA_MAX_CMDL_WORDS * sizeof(u32)));
 
-	/* Iniialize the command update structure */
+	/* Initialize the command update structure */
 	memzero_explicit(upd_info, sizeof(*upd_info));
 
 	if (cfg->enc_eng_id && cfg->auth_eng_id) {
@@ -1037,7 +1038,7 @@ static void sa_free_sa_rx_data(struct sa_rx_data *rxd)
 
 static void sa_aes_dma_in_callback(void *data)
 {
-	struct sa_rx_data *rxd = (struct sa_rx_data *)data;
+	struct sa_rx_data *rxd = data;
 	struct skcipher_request *req;
 	u32 *result;
 	__be32 *mdptr;
@@ -1351,7 +1352,7 @@ static int sa_decrypt(struct skcipher_request *req)
 
 static void sa_sha_dma_in_callback(void *data)
 {
-	struct sa_rx_data *rxd = (struct sa_rx_data *)data;
+	struct sa_rx_data *rxd = data;
 	struct ahash_request *req;
 	struct crypto_ahash *tfm;
 	unsigned int authsize;
@@ -1689,7 +1690,7 @@ static void sa_sha_cra_exit(struct crypto_tfm *tfm)
 
 static void sa_aead_dma_in_callback(void *data)
 {
-	struct sa_rx_data *rxd = (struct sa_rx_data *)data;
+	struct sa_rx_data *rxd = data;
 	struct aead_request *req;
 	struct crypto_aead *tfm;
 	unsigned int start;
@@ -1868,9 +1869,8 @@ static int sa_aead_setkey(struct crypto_aead *authenc,
 	crypto_aead_set_flags(ctx->fallback.aead,
 			      crypto_aead_get_flags(authenc) &
 			      CRYPTO_TFM_REQ_MASK);
-	crypto_aead_setkey(ctx->fallback.aead, key, keylen);
 
-	return 0;
+	return crypto_aead_setkey(ctx->fallback.aead, key, keylen);
 }
 
 static int sa_aead_setauthsize(struct crypto_aead *tfm, unsigned int authsize)
@@ -2467,7 +2467,7 @@ destroy_dma_pool:
 	return ret;
 }
 
-static int sa_ul_remove(struct platform_device *pdev)
+static void sa_ul_remove(struct platform_device *pdev)
 {
 	struct sa_crypto_data *dev_data = platform_get_drvdata(pdev);
 
@@ -2485,8 +2485,6 @@ static int sa_ul_remove(struct platform_device *pdev)
 
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 static struct platform_driver sa_ul_driver = {
@@ -2498,4 +2496,5 @@ static struct platform_driver sa_ul_driver = {
 		   },
 };
 module_platform_driver(sa_ul_driver);
+MODULE_DESCRIPTION("K3 SA2UL crypto accelerator driver");
 MODULE_LICENSE("GPL v2");

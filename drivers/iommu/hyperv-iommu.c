@@ -51,7 +51,7 @@ static int hyperv_ir_set_affinity(struct irq_data *data,
 	if (ret < 0 || ret == IRQ_SET_MASK_OK_DONE)
 		return ret;
 
-	send_cleanup_vector(cfg);
+	vector_schedule_cleanup(cfg);
 
 	return 0;
 }
@@ -164,8 +164,8 @@ static int __init hyperv_prepare_irq_remapping(void)
 	 * max cpu affinity for IOAPIC irqs. Scan cpu 0-255 and set cpu
 	 * into ioapic_max_cpumask if its APIC ID is less than 256.
 	 */
-	for (i = min_t(unsigned int, num_possible_cpus() - 1, 255); i >= 0; i--)
-		if (cpu_physical_id(i) < 256)
+	for (i = min_t(unsigned int, nr_cpu_ids - 1, 255); i >= 0; i--)
+		if (cpu_possible(i) && cpu_physical_id(i) < 256)
 			cpumask_set_cpu(i, &ioapic_max_cpumask);
 
 	return 0;
@@ -257,7 +257,7 @@ static int hyperv_root_ir_set_affinity(struct irq_data *data,
 	if (ret < 0 || ret == IRQ_SET_MASK_OK_DONE)
 		return ret;
 
-	send_cleanup_vector(cfg);
+	vector_schedule_cleanup(cfg);
 
 	return 0;
 }

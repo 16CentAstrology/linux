@@ -26,6 +26,7 @@
 #include <linux/sched/debug.h>
 #include <linux/sched/task_stack.h>
 #include <linux/irq.h>
+#include <linux/vmalloc.h>
 
 #include <linux/atomic.h>
 #include <asm/cacheflush.h>
@@ -220,7 +221,7 @@ void dump_backtrace(struct pt_regs *regs, struct task_struct *tsk,
 	unsigned int fp, mode;
 	int ok = 1;
 
-	printk("%sBacktrace: ", loglvl);
+	printk("%sCall trace: ", loglvl);
 
 	if (!tsk)
 		tsk = current;
@@ -569,6 +570,7 @@ static int bad_syscall(int n, struct pt_regs *regs)
 static inline int
 __do_cache_op(unsigned long start, unsigned long end)
 {
+	unsigned int ua_flags;
 	int ret;
 
 	do {
@@ -577,7 +579,9 @@ __do_cache_op(unsigned long start, unsigned long end)
 		if (fatal_signal_pending(current))
 			return 0;
 
+		ua_flags = uaccess_save_and_enable();
 		ret = flush_icache_user_range(start, start + chunk);
+		uaccess_restore(ua_flags);
 		if (ret)
 			return ret;
 
@@ -756,6 +760,7 @@ void __readwrite_bug(const char *fn)
 }
 EXPORT_SYMBOL(__readwrite_bug);
 
+#ifdef CONFIG_MMU
 void __pte_error(const char *file, int line, pte_t pte)
 {
 	pr_err("%s:%d: bad pte %08llx.\n", file, line, (long long)pte_val(pte));
@@ -770,6 +775,7 @@ void __pgd_error(const char *file, int line, pgd_t pgd)
 {
 	pr_err("%s:%d: bad pgd %08llx.\n", file, line, (long long)pgd_val(pgd));
 }
+#endif
 
 asmlinkage void __div0(void)
 {

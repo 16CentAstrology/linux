@@ -755,23 +755,23 @@ static struct fman_mac *pcs_to_dtsec(struct phylink_pcs *pcs)
 	return container_of(pcs, struct fman_mac, pcs);
 }
 
-static void dtsec_pcs_get_state(struct phylink_pcs *pcs,
+static void dtsec_pcs_get_state(struct phylink_pcs *pcs, unsigned int neg_mode,
 				struct phylink_link_state *state)
 {
 	struct fman_mac *dtsec = pcs_to_dtsec(pcs);
 
-	phylink_mii_c22_pcs_get_state(dtsec->tbidev, state);
+	phylink_mii_c22_pcs_get_state(dtsec->tbidev, neg_mode, state);
 }
 
-static int dtsec_pcs_config(struct phylink_pcs *pcs, unsigned int mode,
+static int dtsec_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
 			    phy_interface_t interface,
 			    const unsigned long *advertising,
 			    bool permit_pause_to_mac)
 {
 	struct fman_mac *dtsec = pcs_to_dtsec(pcs);
 
-	return phylink_mii_c22_pcs_config(dtsec->tbidev, mode, interface,
-					  advertising);
+	return phylink_mii_c22_pcs_config(dtsec->tbidev, interface,
+					  advertising, neg_mode);
 }
 
 static void dtsec_pcs_an_restart(struct phylink_pcs *pcs)
@@ -1415,7 +1415,6 @@ int dtsec_initialization(struct mac_device *mac_dev,
 	mac_dev->set_exception		= dtsec_set_exception;
 	mac_dev->set_allmulti		= dtsec_set_allmulti;
 	mac_dev->set_tstamp		= dtsec_set_tstamp;
-	mac_dev->set_multi		= fman_set_multi;
 	mac_dev->enable			= dtsec_enable;
 	mac_dev->disable		= dtsec_disable;
 
@@ -1430,7 +1429,7 @@ int dtsec_initialization(struct mac_device *mac_dev,
 	dtsec->dtsec_drv_param->tx_pad_crc = true;
 
 	phy_node = of_parse_phandle(mac_node, "tbi-handle", 0);
-	if (!phy_node || of_device_is_available(phy_node)) {
+	if (!phy_node || !of_device_is_available(phy_node)) {
 		of_node_put(phy_node);
 		err = -EINVAL;
 		dev_err_probe(mac_dev->dev, err,
@@ -1447,6 +1446,7 @@ int dtsec_initialization(struct mac_device *mac_dev,
 		goto _return_fm_mac_free;
 	}
 	dtsec->pcs.ops = &dtsec_pcs_ops;
+	dtsec->pcs.neg_mode = true;
 	dtsec->pcs.poll = true;
 
 	supported = mac_dev->phylink_config.supported_interfaces;

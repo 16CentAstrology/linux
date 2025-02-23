@@ -101,8 +101,7 @@ static const struct st33zp24_phy_ops i2c_phy_ops = {
  * @return: 0 in case of success.
  *	 -1 in other case.
  */
-static int st33zp24_i2c_probe(struct i2c_client *client,
-			      const struct i2c_device_id *id)
+static int st33zp24_i2c_probe(struct i2c_client *client)
 {
 	struct st33zp24_i2c_phy *phy;
 
@@ -134,18 +133,18 @@ static void st33zp24_i2c_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id st33zp24_i2c_id[] = {
-	{TPM_ST33_I2C, 0},
+	{ TPM_ST33_I2C },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, st33zp24_i2c_id);
 
-static const struct of_device_id of_st33zp24_i2c_match[] = {
+static const struct of_device_id of_st33zp24_i2c_match[] __maybe_unused = {
 	{ .compatible = "st,st33zp24-i2c", },
 	{}
 };
 MODULE_DEVICE_TABLE(of, of_st33zp24_i2c_match);
 
-static const struct acpi_device_id st33zp24_i2c_acpi_match[] = {
+static const struct acpi_device_id st33zp24_i2c_acpi_match[] __maybe_unused = {
 	{"SMO3324"},
 	{}
 };
@@ -168,7 +167,7 @@ static struct i2c_driver st33zp24_i2c_driver = {
 
 module_i2c_driver(st33zp24_i2c_driver);
 
-MODULE_AUTHOR("TPM support (TPMsupport@list.st.com)");
+MODULE_AUTHOR("TPM support <TPMsupport@list.st.com>");
 MODULE_DESCRIPTION("STM TPM 1.2 I2C ST33 Driver");
 MODULE_VERSION("1.3.0");
 MODULE_LICENSE("GPL");

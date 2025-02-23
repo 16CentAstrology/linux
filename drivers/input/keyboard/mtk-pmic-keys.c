@@ -10,6 +10,7 @@
 #include <linux/kernel.h>
 #include <linux/mfd/mt6323/registers.h>
 #include <linux/mfd/mt6331/registers.h>
+#include <linux/mfd/mt6357/registers.h>
 #include <linux/mfd/mt6358/registers.h>
 #include <linux/mfd/mt6397/core.h>
 #include <linux/mfd/mt6397/registers.h>
@@ -88,6 +89,19 @@ static const struct mtk_pmic_regs mt6331_regs = {
 				   MTK_PMIC_MT6331_HOMEKEY_RST),
 	.pmic_rst_reg = MT6331_TOP_RST_MISC,
 	.rst_lprst_mask = MTK_PMIC_MT6331_RST_DU_MASK,
+};
+
+static const struct mtk_pmic_regs mt6357_regs = {
+	.keys_regs[MTK_PMIC_PWRKEY_INDEX] =
+		MTK_PMIC_KEYS_REGS(MT6357_TOPSTATUS,
+				   0x2, MT6357_PSC_TOP_INT_CON0, 0x5,
+				   MTK_PMIC_PWRKEY_RST),
+	.keys_regs[MTK_PMIC_HOMEKEY_INDEX] =
+		MTK_PMIC_KEYS_REGS(MT6357_TOPSTATUS,
+				   0x8, MT6357_PSC_TOP_INT_CON0, 0xa,
+				   MTK_PMIC_HOMEKEY_INDEX),
+	.pmic_rst_reg = MT6357_TOP_RST_MISC,
+	.rst_lprst_mask = MTK_PMIC_RST_DU_MASK,
 };
 
 static const struct mtk_pmic_regs mt6358_regs = {
@@ -277,6 +291,9 @@ static const struct of_device_id of_mtk_pmic_keys_match_tbl[] = {
 		.compatible = "mediatek,mt6331-keys",
 		.data = &mt6331_regs,
 	}, {
+		.compatible = "mediatek,mt6357-keys",
+		.data = &mt6357_regs,
+	}, {
 		.compatible = "mediatek,mt6358-keys",
 		.data = &mt6358_regs,
 	}, {
@@ -290,7 +307,7 @@ static int mtk_pmic_keys_probe(struct platform_device *pdev)
 	int error, index = 0;
 	unsigned int keycount;
 	struct mt6397_chip *pmic_chip = dev_get_drvdata(pdev->dev.parent);
-	struct device_node *node = pdev->dev.of_node, *child;
+	struct device_node *node = pdev->dev.of_node;
 	static const char *const irqnames[] = { "powerkey", "homekey" };
 	static const char *const irqnames_r[] = { "powerkey_r", "homekey_r" };
 	struct mtk_pmic_keys *keys;
@@ -326,24 +343,20 @@ static int mtk_pmic_keys_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	for_each_child_of_node(node, child) {
+	for_each_child_of_node_scoped(node, child) {
 		keys->keys[index].regs = &mtk_pmic_regs->keys_regs[index];
 
 		keys->keys[index].irq =
 			platform_get_irq_byname(pdev, irqnames[index]);
-		if (keys->keys[index].irq < 0) {
-			of_node_put(child);
+		if (keys->keys[index].irq < 0)
 			return keys->keys[index].irq;
-		}
 
 		if (of_device_is_compatible(node, "mediatek,mt6358-keys")) {
 			keys->keys[index].irq_r = platform_get_irq_byname(pdev,
 									  irqnames_r[index]);
 
-			if (keys->keys[index].irq_r < 0) {
-				of_node_put(child);
+			if (keys->keys[index].irq_r < 0)
 				return keys->keys[index].irq_r;
-			}
 		}
 
 		error = of_property_read_u32(child,
@@ -352,7 +365,6 @@ static int mtk_pmic_keys_probe(struct platform_device *pdev)
 			dev_err(keys->dev,
 				"failed to read key:%d linux,keycode property: %d\n",
 				index, error);
-			of_node_put(child);
 			return error;
 		}
 
@@ -360,10 +372,8 @@ static int mtk_pmic_keys_probe(struct platform_device *pdev)
 			keys->keys[index].wakeup = true;
 
 		error = mtk_pmic_key_setup(keys, &keys->keys[index]);
-		if (error) {
-			of_node_put(child);
+		if (error)
 			return error;
-		}
 
 		index++;
 	}

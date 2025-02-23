@@ -17,7 +17,9 @@ description: |
 
 properties:
   compatible:
-    const: qcom,gcc-sm8450
+    enum:
+      - qcom,gcc-sm8450
+      - qcom,sm8475-gcc
 
   clocks:
     items:
@@ -25,7 +27,7 @@ properties:
       - description: Sleep clock source
       - description: PCIE 0 Pipe clock source (Optional clock)
       - description: PCIE 1 Pipe clock source (Optional clock)
-      - description: PCIE 1 Phy Auxillary clock source (Optional clock)
+      - description: PCIE 1 Phy Auxiliary clock source (Optional clock)
       - description: UFS Phy Rx symbol 0 clock source (Optional clock)
       - description: UFS Phy Rx symbol 1 clock source (Optional clock)
       - description: UFS Phy Tx symbol 0 clock source (Optional clock)
@@ -49,6 +51,7 @@ required:
   - compatible
   - clocks
   - clock-names
+  - '#power-domain-cells'
 
 allOf:
   - $ref: qcom,gcc.yaml#

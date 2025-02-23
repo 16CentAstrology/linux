@@ -302,6 +302,12 @@ static int mac802154_slave_close(struct net_device *dev)
 
 	ASSERT_RTNL();
 
+	if (mac802154_is_scanning(local))
+		mac802154_abort_scan_locked(local, sdata);
+
+	if (mac802154_is_beaconing(local))
+		mac802154_stop_beacons_locked(local, sdata);
+
 	netif_stop_queue(dev);
 	local->open_count--;
 
@@ -678,6 +684,10 @@ void ieee802154_if_remove(struct ieee802154_sub_if_data *sdata)
 	ASSERT_RTNL();
 
 	mutex_lock(&sdata->local->iflist_mtx);
+	if (list_empty(&sdata->local->interfaces)) {
+		mutex_unlock(&sdata->local->iflist_mtx);
+		return;
+	}
 	list_del_rcu(&sdata->list);
 	mutex_unlock(&sdata->local->iflist_mtx);
 

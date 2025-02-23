@@ -8,6 +8,8 @@ Compute Accelerators
    :maxdepth: 1
 
    introduction
+   amdxdna/index
+   qaic/index
 
 .. only::  subproject and html
 

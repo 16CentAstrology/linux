@@ -7,7 +7,9 @@
 #include "i915_reg.h"
 #include "intel_gt.h"
 #include "intel_gt_clock_utils.h"
+#include "intel_gt_print.h"
 #include "intel_gt_regs.h"
+#include "soc/intel_dram.h"
 
 static u32 read_reference_ts_freq(struct intel_uncore *uncore)
 {
@@ -150,7 +152,7 @@ static u32 gen4_read_clock_frequency(struct intel_uncore *uncore)
 	 *
 	 * Testing on actual hardware has shown there is no /16.
 	 */
-	return RUNTIME_INFO(uncore->i915)->rawclk_freq * 1000;
+	return DIV_ROUND_CLOSEST(i9xx_fsb_freq(uncore->i915), 4) * 1000;
 }
 
 static u32 read_clock_frequency(struct intel_uncore *uncore)
@@ -193,10 +195,9 @@ void intel_gt_init_clock_frequency(struct intel_gt *gt)
 void intel_gt_check_clock_frequency(const struct intel_gt *gt)
 {
 	if (gt->clock_frequency != read_clock_frequency(gt->uncore)) {
-		dev_err(gt->i915->drm.dev,
-			"GT clock frequency changed, was %uHz, now %uHz!\n",
-			gt->clock_frequency,
-			read_clock_frequency(gt->uncore));
+		gt_err(gt, "GT clock frequency changed, was %uHz, now %uHz!\n",
+		       gt->clock_frequency,
+		       read_clock_frequency(gt->uncore));
 	}
 }
 #endif

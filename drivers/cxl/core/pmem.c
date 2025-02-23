@@ -49,36 +49,31 @@ struct cxl_nvdimm_bridge *to_cxl_nvdimm_bridge(struct device *dev)
 		return NULL;
 	return container_of(dev, struct cxl_nvdimm_bridge, dev);
 }
-EXPORT_SYMBOL_NS_GPL(to_cxl_nvdimm_bridge, CXL);
+EXPORT_SYMBOL_NS_GPL(to_cxl_nvdimm_bridge, "CXL");
 
-bool is_cxl_nvdimm_bridge(struct device *dev)
+/**
+ * cxl_find_nvdimm_bridge() - find a bridge device relative to a port
+ * @port: any descendant port of an nvdimm-bridge associated
+ *        root-cxl-port
+ */
+struct cxl_nvdimm_bridge *cxl_find_nvdimm_bridge(struct cxl_port *port)
 {
-	return dev->type == &cxl_nvdimm_bridge_type;
-}
-EXPORT_SYMBOL_NS_GPL(is_cxl_nvdimm_bridge, CXL);
-
-static int match_nvdimm_bridge(struct device *dev, void *data)
-{
-	return is_cxl_nvdimm_bridge(dev);
-}
-
-struct cxl_nvdimm_bridge *cxl_find_nvdimm_bridge(struct device *start)
-{
-	struct cxl_port *port = find_cxl_root(start);
+	struct cxl_root *cxl_root __free(put_cxl_root) = find_cxl_root(port);
 	struct device *dev;
 
-	if (!port)
+	if (!cxl_root)
 		return NULL;
 
-	dev = device_find_child(&port->dev, NULL, match_nvdimm_bridge);
-	put_device(&port->dev);
+	dev = device_find_child(&cxl_root->port.dev,
+				&cxl_nvdimm_bridge_type,
+				device_match_type);
 
 	if (!dev)
 		return NULL;
 
 	return to_cxl_nvdimm_bridge(dev);
 }
-EXPORT_SYMBOL_NS_GPL(cxl_find_nvdimm_bridge, CXL);
+EXPORT_SYMBOL_NS_GPL(cxl_find_nvdimm_bridge, "CXL");
 
 static struct lock_class_key cxl_nvdimm_bridge_key;
 
@@ -160,7 +155,7 @@ err:
 	put_device(dev);
 	return ERR_PTR(rc);
 }
-EXPORT_SYMBOL_NS_GPL(devm_cxl_add_nvdimm_bridge, CXL);
+EXPORT_SYMBOL_NS_GPL(devm_cxl_add_nvdimm_bridge, "CXL");
 
 static void cxl_nvdimm_release(struct device *dev)
 {
@@ -184,7 +179,7 @@ bool is_cxl_nvdimm(struct device *dev)
 {
 	return dev->type == &cxl_nvdimm_type;
 }
-EXPORT_SYMBOL_NS_GPL(is_cxl_nvdimm, CXL);
+EXPORT_SYMBOL_NS_GPL(is_cxl_nvdimm, "CXL");
 
 struct cxl_nvdimm *to_cxl_nvdimm(struct device *dev)
 {
@@ -193,7 +188,7 @@ struct cxl_nvdimm *to_cxl_nvdimm(struct device *dev)
 		return NULL;
 	return container_of(dev, struct cxl_nvdimm, dev);
 }
-EXPORT_SYMBOL_NS_GPL(to_cxl_nvdimm, CXL);
+EXPORT_SYMBOL_NS_GPL(to_cxl_nvdimm, "CXL");
 
 static struct lock_class_key cxl_nvdimm_key;
 
@@ -227,51 +222,35 @@ static struct cxl_nvdimm *cxl_nvdimm_alloc(struct cxl_nvdimm_bridge *cxl_nvb,
 	return cxl_nvd;
 }
 
-static void cxl_nvd_unregister(void *_cxl_nvd)
-{
-	struct cxl_nvdimm *cxl_nvd = _cxl_nvd;
-	struct cxl_memdev *cxlmd = cxl_nvd->cxlmd;
-	struct cxl_nvdimm_bridge *cxl_nvb = cxlmd->cxl_nvb;
-
-	/*
-	 * Either the bridge is in ->remove() context under the device_lock(),
-	 * or cxlmd_release_nvdimm() is cancelling the bridge's release action
-	 * for @cxl_nvd and doing it itself (while manually holding the bridge
-	 * lock).
-	 */
-	device_lock_assert(&cxl_nvb->dev);
-	cxl_nvd->cxlmd = NULL;
-	cxlmd->cxl_nvd = NULL;
-	device_unregister(&cxl_nvd->dev);
-}
-
 static void cxlmd_release_nvdimm(void *_cxlmd)
 {
 	struct cxl_memdev *cxlmd = _cxlmd;
+	struct cxl_nvdimm *cxl_nvd = cxlmd->cxl_nvd;
 	struct cxl_nvdimm_bridge *cxl_nvb = cxlmd->cxl_nvb;
 
-	device_lock(&cxl_nvb->dev);
-	if (cxlmd->cxl_nvd)
-		devm_release_action(&cxl_nvb->dev, cxl_nvd_unregister,
-				    cxlmd->cxl_nvd);
-	device_unlock(&cxl_nvb->dev);
+	cxl_nvd->cxlmd = NULL;
+	cxlmd->cxl_nvd = NULL;
+	cxlmd->cxl_nvb = NULL;
+	device_unregister(&cxl_nvd->dev);
 	put_device(&cxl_nvb->dev);
 }
 
 /**
  * devm_cxl_add_nvdimm() - add a bridge between a cxl_memdev and an nvdimm
+ * @parent_port: parent port for the (to be added) @cxlmd endpoint port
  * @cxlmd: cxl_memdev instance that will perform LIBNVDIMM operations
  *
  * Return: 0 on success negative error code on failure.
  */
-int devm_cxl_add_nvdimm(struct cxl_memdev *cxlmd)
+int devm_cxl_add_nvdimm(struct cxl_port *parent_port,
+			struct cxl_memdev *cxlmd)
 {
 	struct cxl_nvdimm_bridge *cxl_nvb;
 	struct cxl_nvdimm *cxl_nvd;
 	struct device *dev;
 	int rc;
 
-	cxl_nvb = cxl_find_nvdimm_bridge(&cxlmd->dev);
+	cxl_nvb = cxl_find_nvdimm_bridge(parent_port);
 	if (!cxl_nvb)
 		return -ENODEV;
 
@@ -293,22 +272,6 @@ int devm_cxl_add_nvdimm(struct cxl_memdev *cxlmd)
 
 	dev_dbg(&cxlmd->dev, "register %s\n", dev_name(dev));
 
-	/*
-	 * The two actions below arrange for @cxl_nvd to be deleted when either
-	 * the top-level PMEM bridge goes down, or the endpoint device goes
-	 * through ->remove().
-	 */
-	device_lock(&cxl_nvb->dev);
-	if (cxl_nvb->dev.driver)
-		rc = devm_add_action_or_reset(&cxl_nvb->dev, cxl_nvd_unregister,
-					      cxl_nvd);
-	else
-		rc = -ENXIO;
-	device_unlock(&cxl_nvb->dev);
-
-	if (rc)
-		goto err_alloc;
-
 	/* @cxlmd carries a reference on @cxl_nvb until cxlmd_release_nvdimm */
 	return devm_add_action_or_reset(&cxlmd->dev, cxlmd_release_nvdimm, cxlmd);
 
@@ -321,4 +284,4 @@ err_alloc:
 
 	return rc;
 }
-EXPORT_SYMBOL_NS_GPL(devm_cxl_add_nvdimm, CXL);
+EXPORT_SYMBOL_NS_GPL(devm_cxl_add_nvdimm, "CXL");

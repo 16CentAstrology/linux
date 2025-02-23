@@ -27,6 +27,7 @@
 #include <linux/list.h>
 #include <linux/netdev_features.h>
 #include <linux/netdevice.h>
+#include <linux/pm_runtime.h>
 #include <linux/skbuff.h>
 #include <linux/types.h>
 #include <linux/wwan.h>
@@ -45,12 +46,25 @@
 
 static void t7xx_ccmni_enable_napi(struct t7xx_ccmni_ctrl *ctlb)
 {
-	int i;
+	struct dpmaif_ctrl *ctrl;
+	int i, ret;
+
+	ctrl =  ctlb->hif_ctrl;
 
 	if (ctlb->is_napi_en)
 		return;
 
 	for (i = 0; i < RXQ_NUM; i++) {
+		/* The usage count has to be bumped every time before calling
+		 * napi_schedule. It will be decresed in the poll routine,
+		 * right after napi_complete_done is called.
+		 */
+		ret = pm_runtime_resume_and_get(ctrl->dev);
+		if (ret < 0) {
+			dev_err(ctrl->dev, "Failed to resume device: %d\n",
+				ret);
+			return;
+		}
 		napi_enable(ctlb->napi[i]);
 		napi_schedule(ctlb->napi[i]);
 	}
@@ -239,22 +253,27 @@ static void t7xx_ccmni_wwan_setup(struct net_device *dev)
 	dev->netdev_ops = &ccmni_netdev_ops;
 }
 
-static void t7xx_init_netdev_napi(struct t7xx_ccmni_ctrl *ctlb)
+static int t7xx_init_netdev_napi(struct t7xx_ccmni_ctrl *ctlb)
 {
 	int i;
 
 	/* one HW, but shared with multiple net devices,
 	 * so add a dummy device for NAPI.
 	 */
-	init_dummy_netdev(&ctlb->dummy_dev);
+	ctlb->dummy_dev = alloc_netdev_dummy(0);
+	if (!ctlb->dummy_dev)
+		return -ENOMEM;
+
 	atomic_set(&ctlb->napi_usr_refcnt, 0);
 	ctlb->is_napi_en = false;
 
 	for (i = 0; i < RXQ_NUM; i++) {
 		ctlb->napi[i] = &ctlb->hif_ctrl->rxq[i].napi;
-		netif_napi_add_weight(&ctlb->dummy_dev, ctlb->napi[i], t7xx_dpmaif_napi_rx_poll,
+		netif_napi_add_weight(ctlb->dummy_dev, ctlb->napi[i], t7xx_dpmaif_napi_rx_poll,
 				      NIC_NAPI_POLL_BUDGET);
 	}
+
+	return 0;
 }
 
 static void t7xx_uninit_netdev_napi(struct t7xx_ccmni_ctrl *ctlb)
@@ -265,6 +284,7 @@ static void t7xx_uninit_netdev_napi(struct t7xx_ccmni_ctrl *ctlb)
 		netif_napi_del(ctlb->napi[i]);
 		ctlb->napi[i] = NULL;
 	}
+	free_netdev(ctlb->dummy_dev);
 }
 
 static int t7xx_ccmni_wwan_newlink(void *ctxt, struct net_device *dev, u32 if_id,
@@ -466,6 +486,7 @@ int t7xx_ccmni_init(struct t7xx_pci_dev *t7xx_dev)
 {
 	struct device *dev = &t7xx_dev->pdev->dev;
 	struct t7xx_ccmni_ctrl *ctlb;
+	int ret;
 
 	ctlb = devm_kzalloc(dev, sizeof(*ctlb), GFP_KERNEL);
 	if (!ctlb)
@@ -481,7 +502,12 @@ int t7xx_ccmni_init(struct t7xx_pci_dev *t7xx_dev)
 	if (!ctlb->hif_ctrl)
 		return -ENOMEM;
 
-	t7xx_init_netdev_napi(ctlb);
+	ret = t7xx_init_netdev_napi(ctlb);
+	if (ret) {
+		t7xx_dpmaif_hif_exit(ctlb->hif_ctrl);
+		return ret;
+	}
+
 	init_md_status_notifier(t7xx_dev);
 	return 0;
 }

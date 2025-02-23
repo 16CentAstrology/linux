@@ -4,7 +4,7 @@
 # subdirectories here. Add them in the ".gitignore" file
 # in that subdirectory instead.
 #
-# NOTE! Please use 'git ls-files -i --exclude-standard'
+# NOTE! Please use 'git ls-files -i -c --exclude-per-directory=.gitignore'
 # command after changing this file, to see if there are
 # any tracked files which get ignored after the change.
 #
@@ -22,8 +22,10 @@
 *.dtb.S
 *.dtbo.S
 *.dwo
+*.dylib
 *.elf
 *.gcno
+*.gcda
 *.gz
 *.i
 *.ko
@@ -39,19 +41,19 @@
 *.o.*
 *.patch
 *.rmeta
+*.rpm
 *.rsi
 *.s
 *.so
 *.so.dbg
 *.su
 *.symtypes
-*.symversions
 *.tab.[ch]
 *.tar
-*.usyms
 *.xz
 *.zst
 Module.symvers
+dtbs-list
 modules.order
 
 #
@@ -69,12 +71,13 @@ modules.order
 /Module.markers
 /modules.builtin
 /modules.builtin.modinfo
+/modules.builtin.ranges
 /modules.nsdeps
 
 #
 # RPM spec file (make rpm-pkg)
 #
-/*.spec
+/rpmbuild/
 
 #
 # Debian directory (make deb-pkg)
@@ -92,13 +95,22 @@ modules.order
 /tar-install/
 
 #
+# pacman files (make pacman-pkg)
+#
+/PKGBUILD
+/pacman/
+
+#
 # We don't want to ignore the following even if they are dot-files
 #
 !.clang-format
+!.clippy.toml
 !.cocciconfig
+!.editorconfig
 !.get_maintainer.ignore
 !.gitattributes
 !.gitignore
+!.kunitconfig
 !.mailmap
 !.rustfmt.toml
 
@@ -107,7 +119,6 @@ modules.order
 #
 /include/config/
 /include/generated/
-/include/ksym/
 /arch/*/include/generated/
 
 # stgit generated dirs
@@ -119,6 +130,7 @@ series
 
 # ctags files
 tags
+!tags/
 TAGS
 
 # cscope files
@@ -134,7 +146,6 @@ GTAGS
 # id-utils files
 ID
 
-*.orig
 *~
 \#*#
 

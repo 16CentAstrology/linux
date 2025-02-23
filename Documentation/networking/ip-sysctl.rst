@@ -50,7 +50,7 @@ ip_no_pmtu_disc - INTEGER
 	Default: FALSE
 
 min_pmtu - INTEGER
-	default 552 - minimum Path MTU. Unless this is changed mannually,
+	default 552 - minimum Path MTU. Unless this is changed manually,
 	each cached pmtu will never be lower than this setting.
 
 ip_forward_use_pmtu - BOOLEAN
@@ -131,6 +131,20 @@ fib_multipath_hash_fields - UNSIGNED INTEGER
 
 	Default: 0x0007 (source IP, destination IP and IP protocol)
 
+fib_multipath_hash_seed - UNSIGNED INTEGER
+	The seed value used when calculating hash for multipath routes. Applies
+	to both IPv4 and IPv6 datapath. Only present for kernels built with
+	CONFIG_IP_ROUTE_MULTIPATH enabled.
+
+	When set to 0, the seed value used for multipath routing defaults to an
+	internal random-generated one.
+
+	The actual hashing algorithm is not specified -- there is no guarantee
+	that a next hop distribution effected by a given seed will keep stable
+	across kernel versions.
+
+	Default: 0 (random)
+
 fib_sync_mem - UNSIGNED INTEGER
 	Amount of dirty memory from fib entries that can be backlogged before
 	synchronize_rcu is forced.
@@ -155,6 +169,9 @@ route/max_size - INTEGER
 
 	From linux kernel 3.6 onwards, this is deprecated for ipv4
 	as route cache is no longer used.
+
+	From linux kernel 6.3 onwards, this is deprecated for ipv6
+	as garbage collection manages cached route entries.
 
 neigh/default/gc_thresh1 - INTEGER
 	Minimum number of entries to keep.  Garbage collector will not
@@ -318,6 +335,7 @@ tcp_abort_on_overflow - BOOLEAN
 	option can harm clients of your server.
 
 tcp_adv_win_scale - INTEGER
+	Obsolete since linux-6.6
 	Count buffering overhead as bytes/2^tcp_adv_win_scale
 	(if tcp_adv_win_scale > 0) or bytes-bytes/2^(-tcp_adv_win_scale),
 	if it is <= 0.
@@ -336,6 +354,8 @@ tcp_allowed_congestion_control - STRING
 tcp_app_win - INTEGER
 	Reserve max(window/2^tcp_app_win, mss) of window for application
 	buffer. Value 0 is special, it means that nothing is reserved.
+
+	Possible values are [0, 31], inclusive.
 
 	Default: 31
 
@@ -739,6 +759,13 @@ tcp_comp_sack_nr - INTEGER
 
 	Default : 44
 
+tcp_backlog_ack_defer - BOOLEAN
+	If set, user thread processing socket backlog tries sending
+	one ACK for the whole queue. This helps to avoid potential
+	long latencies at end of a TCP socket syscall.
+
+	Default : true
+
 tcp_slow_start_after_idle - BOOLEAN
 	If set, provide RFC2861 behavior and time out the congestion
 	window after an idle period.  An idle period is defined at
@@ -876,9 +903,10 @@ tcp_fastopen_key - list of comma separated 32-digit hexadecimal INTEGERs
 tcp_syn_retries - INTEGER
 	Number of times initial SYNs for an active TCP connection attempt
 	will be retransmitted. Should not be higher than 127. Default value
-	is 6, which corresponds to 63seconds till the last retransmission
-	with the current initial RTO of 1second. With this the final timeout
-	for an active TCP connection attempt will happen after 127seconds.
+	is 6, which corresponds to 67seconds (with tcp_syn_linear_timeouts = 4)
+	till the last retransmission with the current initial RTO of 1second.
+	With this the final timeout for an active TCP connection attempt
+	will happen after 131seconds.
 
 tcp_timestamps - INTEGER
 	Enable timestamps as defined in RFC1323.
@@ -941,6 +969,16 @@ tcp_pacing_ca_ratio - INTEGER
 
 	Default: 120
 
+tcp_syn_linear_timeouts - INTEGER
+	The number of times for an active TCP connection to retransmit SYNs with
+	a linear backoff timeout before defaulting to an exponential backoff
+	timeout. This has no effect on SYNACK at the passive TCP side.
+
+	With an initial RTO of 1 and tcp_syn_linear_timeouts = 4 we would
+	expect SYN RTOs to be: 1, 1, 1, 1, 1, 2, 4, ... (4 linear timeouts,
+	and the first exponential backoff using 2^0 * initial_RTO).
+	Default: 4
+
 tcp_tso_win_divisor - INTEGER
 	This allows control over what percentage of the congestion window
 	can be consumed by a single TSO frame.
@@ -962,8 +1000,37 @@ tcp_tw_reuse - INTEGER
 
 	Default: 2
 
+tcp_tw_reuse_delay - UNSIGNED INTEGER
+        The delay in milliseconds before a TIME-WAIT socket can be reused by a
+        new connection, if TIME-WAIT socket reuse is enabled. The actual reuse
+        threshold is within [N, N+1] range, where N is the requested delay in
+        milliseconds, to ensure the delay interval is never shorter than the
+        configured value.
+
+        This setting contains an assumption about the other TCP timestamp clock
+        tick interval. It should not be set to a value lower than the peer's
+        clock tick for PAWS (Protection Against Wrapped Sequence numbers)
+        mechanism work correctly for the reused connection.
+
+        Default: 1000 (milliseconds)
+
 tcp_window_scaling - BOOLEAN
 	Enable window scaling as defined in RFC1323.
+
+tcp_shrink_window - BOOLEAN
+	This changes how the TCP receive window is calculated.
+
+	RFC 7323, section 2.4, says there are instances when a retracted
+	window can be offered, and that TCP implementations MUST ensure
+	that they handle a shrinking window, as specified in RFC 1122.
+
+	- 0 - Disabled.	The window is never shrunk.
+	- 1 - Enabled.	The window is shrunk when necessary to remain within
+			the memory limit set by autotuning (sk_rcvbuf).
+			This only occurs if a non-zero receive window
+			scaling factor is also in effect.
+
+	Default: 0
 
 tcp_wmem - vector of 3 INTEGERs: min, default, max
 	min: Amount of memory reserved for send buffers for TCP sockets.
@@ -1143,6 +1210,32 @@ tcp_plb_cong_thresh - INTEGER
 	Possible Values: 0 - 256
 
 	Default: 128
+
+tcp_pingpong_thresh - INTEGER
+	The number of estimated data replies sent for estimated incoming data
+	requests that must happen before TCP considers that a connection is a
+	"ping-pong" (request-response) connection for which delayed
+	acknowledgments can provide benefits.
+
+	This threshold is 1 by default, but some applications may need a higher
+	threshold for optimal performance.
+
+	Possible Values: 1 - 255
+
+	Default: 1
+
+tcp_rto_min_us - INTEGER
+	Minimal TCP retransmission timeout (in microseconds). Note that the
+	rto_min route option has the highest precedence for configuring this
+	setting, followed by the TCP_BPF_RTO_MIN socket option, followed by
+	this tcp_rto_min_us sysctl.
+
+	The recommended practice is to use a value less or equal to 200000
+	microseconds.
+
+	Possible Values: 1 - INT_MAX
+
+	Default: 200000
 
 UDP variables
 =============
@@ -1347,8 +1440,8 @@ ping_group_range - 2 INTEGERS
 	Restrict ICMP_PROTO datagram sockets to users in the group range.
 	The default is "1 0", meaning, that nobody (not even root) may
 	create ping sockets.  Setting it to "100 100" would grant permissions
-	to the single group. "0 4294967295" would enable it for the world, "100
-	4294967295" would enable it for the users, but not daemons.
+	to the single group. "0 4294967294" would enable it for the world, "100
+	4294967294" would enable it for the users, but not daemons.
 
 tcp_early_demux - BOOLEAN
 	Enable early demux for established TCP sockets.
@@ -1588,6 +1681,14 @@ proxy_arp_pvlan - BOOLEAN
 	  Cisco and Allied Telesyn call it Private VLAN.
 	  Hewlett-Packard call it Source-Port filtering or port-isolation.
 	  Ericsson call it MAC-Forced Forwarding (RFC Draft).
+
+proxy_delay - INTEGER
+	Delay proxy response.
+
+	Delay response to a neighbor solicitation when proxy_arp
+	or proxy_ndp is enabled. A random value between [0, proxy_delay)
+	will be chosen, setting to zero means reply with no delay.
+	Value in jiffies. Defaults to 80.
 
 shared_media - BOOLEAN
 	Send(router) or accept(host) RFC1620 shared media redirects.
@@ -2075,7 +2176,7 @@ skip_notify_on_dev_down - BOOLEAN
 
 nexthop_compat_mode - BOOLEAN
 	New nexthop API provides a means for managing nexthops independent of
-	prefixes. Backwards compatibilty with old route format is enabled by
+	prefixes. Backwards compatibility with old route format is enabled by
 	default which means route dumps and notifications contain the new
 	nexthop attribute but also the full, expanded nexthop definition.
 	Further, updates or deletes of a nexthop configuration generate route
@@ -2083,6 +2184,12 @@ nexthop_compat_mode - BOOLEAN
 	understands the new API, this sysctl can be disabled to achieve full
 	performance benefits of the new API by disabling the nexthop expansion
 	and extraneous notifications.
+
+	Note that as a backward-compatible mode, dumping of modern features
+	might be incomplete or wrong. For example, resilient groups will not be
+	shown as such, but rather as just a list of next hops. Also weights that
+	do not fit into 8 bits will show incorrectly.
+
 	Default: true (backward compat mode)
 
 fib_notify_on_flag_change - INTEGER
@@ -2248,6 +2355,14 @@ accept_ra_min_hop_limit - INTEGER
 
 	Default: 1
 
+accept_ra_min_lft - INTEGER
+	Minimum acceptable lifetime value in Router Advertisement.
+
+	RA sections with a lifetime less than this value shall be
+	ignored. Zero lifetimes stay unaffected.
+
+	Default: 0
+
 accept_ra_pinfo - BOOLEAN
 	Learn Prefix Information in Router Advertisement.
 
@@ -2255,6 +2370,31 @@ accept_ra_pinfo - BOOLEAN
 
 		- enabled if accept_ra is enabled.
 		- disabled if accept_ra is disabled.
+
+ra_honor_pio_life - BOOLEAN
+	Whether to use RFC4862 Section 5.5.3e to determine the valid
+	lifetime of an address matching a prefix sent in a Router
+	Advertisement Prefix Information Option.
+
+	- If enabled, the PIO valid lifetime will always be honored.
+	- If disabled, RFC4862 section 5.5.3e is used to determine
+	  the valid lifetime of the address.
+
+	Default: 0 (disabled)
+
+ra_honor_pio_pflag - BOOLEAN
+	The Prefix Information Option P-flag indicates the network can
+	allocate a unique IPv6 prefix per client using DHCPv6-PD.
+	This sysctl can be enabled when a userspace DHCPv6-PD client
+	is running to cause the P-flag to take effect: i.e. the
+	P-flag suppresses any effects of the A-flag within the same
+	PIO. For a given PIO, P=1 and A=1 is treated as A=0.
+
+	- If disabled, the P-flag is ignored.
+	- If enabled, the P-flag will disable SLAAC autoconfiguration
+	  for the given Prefix Information Option.
+
+	Default: 0 (disabled)
 
 accept_ra_rt_info_min_plen - INTEGER
 	Minimum prefix length of Route Information in RA.
@@ -2423,12 +2563,18 @@ use_tempaddr - INTEGER
 		* -1 (for point-to-point devices and loopback devices)
 
 temp_valid_lft - INTEGER
-	valid lifetime (in seconds) for temporary addresses.
+	valid lifetime (in seconds) for temporary addresses. If less than the
+	minimum required lifetime (typically 5-7 seconds), temporary addresses
+	will not be created.
 
 	Default: 172800 (2 days)
 
 temp_prefered_lft - INTEGER
-	Preferred lifetime (in seconds) for temporary addresses.
+	Preferred lifetime (in seconds) for temporary addresses. If
+	temp_prefered_lft is less than the minimum required lifetime (typically
+	5-7 seconds), the preferred lifetime is the minimum required. If
+	temp_prefered_lft is greater than temp_valid_lft, the preferred lifetime
+	is temp_valid_lft.
 
 	Default: 86400 (1 day)
 
@@ -2449,6 +2595,16 @@ max_desync_factor - INTEGER
 	value is in seconds.
 
 	Default: 600
+
+regen_min_advance - INTEGER
+	How far in advance (in seconds), at minimum, to create a new temporary
+	address before the current one is deprecated. This value is added to
+	the amount of time that may be required for duplicate address detection
+	to determine when to create a new address. Linux permits setting this
+	value to less than the default of 2 seconds, but a value less than 2
+	does not conform to RFC 8981.
+
+	Default: 2
 
 regen_max_retry - INTEGER
 	Number of attempts before give up attempting to generate
@@ -2708,6 +2864,13 @@ echo_ignore_anycast - BOOLEAN
 
 	Default: 0
 
+error_anycast_as_unicast - BOOLEAN
+	If set to 1, then the kernel will respond with ICMP Errors
+	resulting from requests sent to it over the IPv6 protocol destined
+	to anycast address essentially treating anycast as unicast.
+
+	Default: 0
+
 xfrm6_gc_thresh - INTEGER
 	(Obsolete since linux-4.14)
 	The threshold at which we will start garbage collecting for IPv6
@@ -2808,7 +2971,7 @@ pf_expose - INTEGER
 	can be got via SCTP_GET_PEER_ADDR_INFO sockopt;  When it's enabled,
 	a SCTP_PEER_ADDR_CHANGE event will be sent for a transport becoming
 	SCTP_PF state and a SCTP_PF-state transport info can be got via
-	SCTP_GET_PEER_ADDR_INFO sockopt;  When it's diabled, no
+	SCTP_GET_PEER_ADDR_INFO sockopt;  When it's disabled, no
 	SCTP_PEER_ADDR_CHANGE event will be sent and it returns -EACCES when
 	trying to get a SCTP_PF-state transport info via SCTP_GET_PEER_ADDR_INFO
 	sockopt.

@@ -274,11 +274,9 @@ static int mpfs_rtc_probe(struct platform_device *pdev)
 	return devm_rtc_register_device(rtcdev->rtc);
 }
 
-static int mpfs_rtc_remove(struct platform_device *pdev)
+static void mpfs_rtc_remove(struct platform_device *pdev)
 {
 	dev_pm_clear_wake_irq(&pdev->dev);
-
-	return 0;
 }
 
 static const struct of_device_id mpfs_rtc_of_match[] = {

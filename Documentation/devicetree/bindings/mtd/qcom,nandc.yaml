@@ -31,10 +31,24 @@ properties:
       - const: core
       - const: aon
 
+  qcom,cmd-crci:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      Must contain the ADM command type CRCI block instance number specified for
+      the NAND controller on the given platform
+
+  qcom,data-crci:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      Must contain the ADM data type CRCI block instance number specified for
+      the NAND controller on the given platform
+
 patternProperties:
   "^nand@[a-f0-9]$":
     type: object
+    $ref: raw-nand-chip.yaml
     properties:
+
       nand-bus-width:
         const: 8
 
@@ -45,8 +59,26 @@ patternProperties:
         enum:
           - 512
 
+      qcom,boot-partitions:
+        $ref: /schemas/types.yaml#/definitions/uint32-matrix
+        items:
+          items:
+            - description: offset
+            - description: size
+        description:
+          Boot partition use a different layout where the 4 bytes of spare
+          data are not protected by ECC. Use this to declare these special
+          partitions by defining first the offset and then the size.
+
+          It's in the form of <offset1 size1 offset2 size2 offset3 ...>
+          and should be declared in ascending order.
+
+          Refer to the ipq8064 example on how to use this special binding.
+
+    unevaluatedProperties: false
+
 allOf:
-  - $ref: "nand-controller.yaml#"
+  - $ref: nand-controller.yaml#
 
   - if:
       properties:
@@ -62,18 +94,6 @@ allOf:
         dma-names:
           items:
             - const: rxtx
-
-        qcom,cmd-crci:
-          $ref: /schemas/types.yaml#/definitions/uint32
-          description:
-            Must contain the ADM command type CRCI block instance number
-            specified for the NAND controller on the given platform
-
-        qcom,data-crci:
-          $ref: /schemas/types.yaml#/definitions/uint32
-          description:
-            Must contain the ADM data type CRCI block instance number
-            specified for the NAND controller on the given platform
 
   - if:
       properties:
@@ -99,30 +119,13 @@ allOf:
             - const: rx
             - const: cmd
 
-  - if:
-      properties:
-        compatible:
-          contains:
-            enum:
-              - qcom,ipq806x-nand
+        qcom,cmd-crci: false
+        qcom,data-crci: false
 
-    then:
-      properties:
-        qcom,boot-partitions:
-          $ref: /schemas/types.yaml#/definitions/uint32-matrix
-          items:
-            items:
-              - description: offset
-              - description: size
-          description:
-            Boot partition use a different layout where the 4 bytes of spare
-            data are not protected by ECC. Use this to declare these special
-            partitions by defining first the offset and then the size.
-
-            It's in the form of <offset1 size1 offset2 size2 offset3 ...>
-            and should be declared in ascending order.
-
-            Refer to the ipq8064 example on how to use this special binding.
+      patternProperties:
+        "^nand@[a-f0-9]$":
+          properties:
+            qcom,boot-partitions: false
 
 required:
   - compatible

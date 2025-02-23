@@ -314,19 +314,35 @@ static int squashfs_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_flags |= SB_RDONLY;
 	sb->s_op = &squashfs_super_ops;
 
-	err = -ENOMEM;
-
 	msblk->block_cache = squashfs_cache_init("metadata",
 			SQUASHFS_CACHED_BLKS, SQUASHFS_METADATA_SIZE);
-	if (msblk->block_cache == NULL)
+	if (IS_ERR(msblk->block_cache)) {
+		err = PTR_ERR(msblk->block_cache);
 		goto failed_mount;
+	}
 
 	/* Allocate read_page block */
 	msblk->read_page = squashfs_cache_init("data",
-		msblk->max_thread_num, msblk->block_size);
-	if (msblk->read_page == NULL) {
+		SQUASHFS_READ_PAGES, msblk->block_size);
+	if (IS_ERR(msblk->read_page)) {
 		errorf(fc, "Failed to allocate read_page block");
+		err = PTR_ERR(msblk->read_page);
 		goto failed_mount;
+	}
+
+	if (msblk->devblksize == PAGE_SIZE) {
+		struct inode *cache = new_inode(sb);
+
+		if (cache == NULL) {
+			err = -ENOMEM;
+			goto failed_mount;
+		}
+
+		set_nlink(cache, 1);
+		cache->i_size = OFFSET_MAX;
+		mapping_set_gfp_mask(cache->i_mapping, GFP_NOFS);
+
+		msblk->cache_mapping = cache->i_mapping;
 	}
 
 	msblk->stream = squashfs_decompressor_setup(sb, flags);
@@ -392,9 +408,9 @@ handle_fragments:
 		goto check_directory_table;
 
 	msblk->fragment_cache = squashfs_cache_init("fragment",
-		SQUASHFS_CACHED_FRAGMENTS, msblk->block_size);
-	if (msblk->fragment_cache == NULL) {
-		err = -ENOMEM;
+		min(SQUASHFS_CACHED_FRAGMENTS, fragments), msblk->block_size);
+	if (IS_ERR(msblk->fragment_cache)) {
+		err = PTR_ERR(msblk->fragment_cache);
 		goto failed_mount;
 	}
 
@@ -454,6 +470,8 @@ failed_mount:
 	squashfs_cache_delete(msblk->block_cache);
 	squashfs_cache_delete(msblk->fragment_cache);
 	squashfs_cache_delete(msblk->read_page);
+	if (msblk->cache_mapping)
+		iput(msblk->cache_mapping->host);
 	msblk->thread_ops->destroy(msblk);
 	kfree(msblk->inode_lookup_table);
 	kfree(msblk->fragment_index);
@@ -572,6 +590,8 @@ static void squashfs_put_super(struct super_block *sb)
 		squashfs_cache_delete(sbi->block_cache);
 		squashfs_cache_delete(sbi->fragment_cache);
 		squashfs_cache_delete(sbi->read_page);
+		if (sbi->cache_mapping)
+			iput(sbi->cache_mapping->host);
 		sbi->thread_ops->destroy(sbi);
 		kfree(sbi->id_table);
 		kfree(sbi->fragment_index);

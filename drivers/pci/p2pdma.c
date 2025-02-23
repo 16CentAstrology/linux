@@ -28,9 +28,9 @@ struct pci_p2pdma {
 };
 
 struct pci_p2pdma_pagemap {
-	struct dev_pagemap pgmap;
 	struct pci_dev *provider;
 	u64 bus_offset;
+	struct dev_pagemap pgmap;
 };
 
 static struct pci_p2pdma_pagemap *to_p2p_pgmap(struct dev_pagemap *pgmap)
@@ -90,7 +90,7 @@ static ssize_t published_show(struct device *dev, struct device_attribute *attr,
 static DEVICE_ATTR_RO(published);
 
 static int p2pmem_alloc_mmap(struct file *filp, struct kobject *kobj,
-		struct bin_attribute *attr, struct vm_area_struct *vma)
+		const struct bin_attribute *attr, struct vm_area_struct *vma)
 {
 	struct pci_dev *pdev = to_pci_dev(kobj_to_dev(kobj));
 	size_t len = vma->vm_end - vma->vm_start;
@@ -161,7 +161,7 @@ out:
 	return ret;
 }
 
-static struct bin_attribute p2pmem_alloc_attr = {
+static const struct bin_attribute p2pmem_alloc_attr = {
 	.attr = { .name = "allocate", .mode = 0660 },
 	.mmap = p2pmem_alloc_mmap,
 	/*
@@ -180,25 +180,27 @@ static struct attribute *p2pmem_attrs[] = {
 	NULL,
 };
 
-static struct bin_attribute *p2pmem_bin_attrs[] = {
+static const struct bin_attribute *const p2pmem_bin_attrs[] = {
 	&p2pmem_alloc_attr,
 	NULL,
 };
 
 static const struct attribute_group p2pmem_group = {
 	.attrs = p2pmem_attrs,
-	.bin_attrs = p2pmem_bin_attrs,
+	.bin_attrs_new = p2pmem_bin_attrs,
 	.name = "p2pmem",
 };
 
 static void p2pdma_page_free(struct page *page)
 {
 	struct pci_p2pdma_pagemap *pgmap = to_p2p_pgmap(page->pgmap);
+	/* safe to dereference while a reference is held to the percpu ref */
+	struct pci_p2pdma *p2pdma =
+		rcu_dereference_protected(pgmap->provider->p2pdma, 1);
 	struct percpu_ref *ref;
 
-	gen_pool_free_owner(pgmap->provider->p2pdma->pool,
-			    (uintptr_t)page_to_virt(page), PAGE_SIZE,
-			    (void **)&ref);
+	gen_pool_free_owner(p2pdma->pool, (uintptr_t)page_to_virt(page),
+			    PAGE_SIZE, (void **)&ref);
 	percpu_ref_put(ref);
 }
 
@@ -433,7 +435,7 @@ static const struct pci_p2pdma_whitelist_entry {
 	/* Intel Xeon E7 v3/Xeon E5 v3/Core i7 */
 	{PCI_VENDOR_ID_INTEL,	0x2f00, REQ_SAME_HOST_BRIDGE},
 	{PCI_VENDOR_ID_INTEL,	0x2f01, REQ_SAME_HOST_BRIDGE},
-	/* Intel SkyLake-E */
+	/* Intel Skylake-E */
 	{PCI_VENDOR_ID_INTEL,	0x2030, 0},
 	{PCI_VENDOR_ID_INTEL,	0x2031, 0},
 	{PCI_VENDOR_ID_INTEL,	0x2032, 0},
@@ -530,8 +532,7 @@ static bool host_bridge_whitelist(struct pci_dev *a, struct pci_dev *b,
 
 static unsigned long map_types_idx(struct pci_dev *client)
 {
-	return (pci_domain_nr(client->bus) << 16) |
-		(client->bus->number << 8) | client->devfn;
+	return (pci_domain_nr(client->bus) << 16) | pci_dev_id(client);
 }
 
 /*
@@ -660,7 +661,7 @@ done:
 	p2pdma = rcu_dereference(provider->p2pdma);
 	if (p2pdma)
 		xa_store(&p2pdma->map_types, map_types_idx(client),
-			 xa_mk_value(map_type), GFP_KERNEL);
+			 xa_mk_value(map_type), GFP_ATOMIC);
 	rcu_read_unlock();
 	return map_type;
 }
@@ -744,8 +745,7 @@ EXPORT_SYMBOL_GPL(pci_has_p2pmem);
 
 /**
  * pci_p2pmem_find_many - find a peer-to-peer DMA memory device compatible with
- *	the specified list of clients and shortest distance (as determined
- *	by pci_p2pmem_dma())
+ *	the specified list of clients and shortest distance
  * @clients: array of devices to check (NULL-terminated)
  * @num_clients: number of client devices in the list
  *
@@ -837,7 +837,6 @@ void *pci_alloc_p2pmem(struct pci_dev *pdev, size_t size)
 	if (unlikely(!percpu_ref_tryget_live_rcu(ref))) {
 		gen_pool_free(p2pdma->pool, (unsigned long) ret, size);
 		ret = NULL;
-		goto out;
 	}
 out:
 	rcu_read_unlock();

@@ -51,7 +51,7 @@
 #include <linux/jiffies.h>
 #include <linux/percpu-defs.h>
 #include <linux/percpu.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <asm/div64.h>
 #include "hpsa_cmd.h"
 #include "hpsa.h"
@@ -283,9 +283,10 @@ static int hpsa_scan_finished(struct Scsi_Host *sh,
 static int hpsa_change_queue_depth(struct scsi_device *sdev, int qdepth);
 
 static int hpsa_eh_device_reset_handler(struct scsi_cmnd *scsicmd);
-static int hpsa_slave_alloc(struct scsi_device *sdev);
-static int hpsa_slave_configure(struct scsi_device *sdev);
-static void hpsa_slave_destroy(struct scsi_device *sdev);
+static int hpsa_sdev_init(struct scsi_device *sdev);
+static int hpsa_sdev_configure(struct scsi_device *sdev,
+			       struct queue_limits *lim);
+static void hpsa_sdev_destroy(struct scsi_device *sdev);
 
 static void hpsa_update_scsi_devices(struct ctlr_info *h);
 static int check_for_unit_attention(struct ctlr_info *h,
@@ -967,7 +968,7 @@ ATTRIBUTE_GROUPS(hpsa_shost);
 #define HPSA_NRESERVED_CMDS	(HPSA_CMDS_RESERVED_FOR_DRIVER +\
 				 HPSA_MAX_CONCURRENT_PASSTHRUS)
 
-static struct scsi_host_template hpsa_driver_template = {
+static const struct scsi_host_template hpsa_driver_template = {
 	.module			= THIS_MODULE,
 	.name			= HPSA,
 	.proc_name		= HPSA,
@@ -978,9 +979,9 @@ static struct scsi_host_template hpsa_driver_template = {
 	.this_id		= -1,
 	.eh_device_reset_handler = hpsa_eh_device_reset_handler,
 	.ioctl			= hpsa_ioctl,
-	.slave_alloc		= hpsa_slave_alloc,
-	.slave_configure	= hpsa_slave_configure,
-	.slave_destroy		= hpsa_slave_destroy,
+	.sdev_init		= hpsa_sdev_init,
+	.sdev_configure		= hpsa_sdev_configure,
+	.sdev_destroy		= hpsa_sdev_destroy,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl		= hpsa_compat_ioctl,
 #endif
@@ -2107,7 +2108,7 @@ static struct hpsa_scsi_dev_t *lookup_hpsa_scsi_dev(struct ctlr_info *h,
 	return NULL;
 }
 
-static int hpsa_slave_alloc(struct scsi_device *sdev)
+static int hpsa_sdev_init(struct scsi_device *sdev)
 {
 	struct hpsa_scsi_dev_t *sd = NULL;
 	unsigned long flags;
@@ -2142,7 +2143,8 @@ static int hpsa_slave_alloc(struct scsi_device *sdev)
 
 /* configure scsi device based on internal per-device structure */
 #define CTLR_TIMEOUT (120 * HZ)
-static int hpsa_slave_configure(struct scsi_device *sdev)
+static int hpsa_sdev_configure(struct scsi_device *sdev,
+			       struct queue_limits *lim)
 {
 	struct hpsa_scsi_dev_t *sd;
 	int queue_depth;
@@ -2173,7 +2175,7 @@ static int hpsa_slave_configure(struct scsi_device *sdev)
 	return 0;
 }
 
-static void hpsa_slave_destroy(struct scsi_device *sdev)
+static void hpsa_sdev_destroy(struct scsi_device *sdev)
 {
 	struct hpsa_scsi_dev_t *hdev = NULL;
 
@@ -5850,7 +5852,7 @@ static int hpsa_scsi_host_alloc(struct ctlr_info *h)
 {
 	struct Scsi_Host *sh;
 
-	sh = scsi_host_alloc(&hpsa_driver_template, sizeof(h));
+	sh = scsi_host_alloc(&hpsa_driver_template, sizeof(struct ctlr_info *));
 	if (sh == NULL) {
 		dev_err(&h->pdev->dev, "scsi_host_alloc failed\n");
 		return -ENOMEM;
@@ -7509,7 +7511,7 @@ fallback:
  */
 static int hpsa_interrupt_mode(struct ctlr_info *h)
 {
-	unsigned int flags = PCI_IRQ_LEGACY;
+	unsigned int flags = PCI_IRQ_INTX;
 	int ret;
 
 	/* Some boards advertise MSI but don't really support it */
@@ -9108,7 +9110,6 @@ static void hpsa_remove_one(struct pci_dev *pdev)
 
 	free_percpu(h->lockup_detected);		/* init_one 2 */
 	h->lockup_detected = NULL;			/* init_one 2 */
-	/* (void) pci_disable_pcie_error_reporting(pdev); */	/* init_one 1 */
 
 	hpda_free_ctlr_info(h);				/* init_one 1 */
 }
@@ -9476,8 +9477,6 @@ static void hpsa_free_performant_mode(struct ctlr_info *h)
 static int hpsa_put_ctlr_into_performant_mode(struct ctlr_info *h)
 {
 	u32 trans_support;
-	unsigned long transMethod = CFGTBL_Trans_Performant |
-					CFGTBL_Trans_use_short_tags;
 	int i, rc;
 
 	if (hpsa_simple_mode)
@@ -9489,14 +9488,10 @@ static int hpsa_put_ctlr_into_performant_mode(struct ctlr_info *h)
 
 	/* Check for I/O accelerator mode support */
 	if (trans_support & CFGTBL_Trans_io_accel1) {
-		transMethod |= CFGTBL_Trans_io_accel1 |
-				CFGTBL_Trans_enable_directed_msix;
 		rc = hpsa_alloc_ioaccel1_cmd_and_bft(h);
 		if (rc)
 			return rc;
 	} else if (trans_support & CFGTBL_Trans_io_accel2) {
-		transMethod |= CFGTBL_Trans_io_accel2 |
-				CFGTBL_Trans_enable_directed_msix;
 		rc = hpsa_alloc_ioaccel2_cmd_and_bft(h);
 		if (rc)
 			return rc;

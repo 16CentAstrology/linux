@@ -8,7 +8,7 @@
 #include "rk3566-anbernic-rg353x.dtsi"
 
 / {
-	model = "RG353V";
+	model = "Anbernic RG353V";
 	compatible = "anbernic,rg353v", "rockchip,rk3566";
 
 	aliases {
@@ -42,7 +42,7 @@
 		compatible = "simple-audio-card";
 		simple-audio-card,name = "rk817_int";
 		simple-audio-card,format = "i2s";
-		simple-audio-card,hp-det-gpio = <&gpio4 RK_PC6 GPIO_ACTIVE_HIGH>;
+		simple-audio-card,hp-det-gpios = <&gpio4 RK_PC6 GPIO_ACTIVE_HIGH>;
 		simple-audio-card,mclk-fs = <256>;
 		simple-audio-card,widgets =
 			"Microphone", "Mic Jack",
@@ -79,9 +79,21 @@
 };
 
 &i2c2 {
-	pintctrl-names = "default";
+	pinctrl-names = "default";
 	pinctrl-0 = <&i2c2m1_xfer>;
 	status = "okay";
+
+	touch@1a {
+		compatible = "hynitron,cst340";
+		reg = <0x1a>;
+		interrupt-parent = <&gpio4>;
+		interrupts = <RK_PB1 IRQ_TYPE_EDGE_FALLING>;
+		pinctrl-0 = <&touch_rst>;
+		pinctrl-names = "default";
+		reset-gpios = <&gpio4 RK_PA6 GPIO_ACTIVE_LOW>;
+		touchscreen-size-x = <640>;
+		touchscreen-size-y = <480>;
+	};
 };
 
 &pinctrl {

@@ -19,7 +19,6 @@
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/slot-gpio.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
 #include <linux/of.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
@@ -1526,7 +1525,6 @@ static const struct sdhci_pltfm_data sdhci_tegra186_pdata = {
 	.quirks = SDHCI_QUIRK_BROKEN_TIMEOUT_VAL |
 		  SDHCI_QUIRK_SINGLE_POWER_WRITE |
 		  SDHCI_QUIRK_NO_HISPD_BIT |
-		  SDHCI_QUIRK_BROKEN_ADMA_ZEROLEN_DESC |
 		  SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN,
 	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN |
 		   SDHCI_QUIRK2_ISSUE_CMD_DAT_RESET_TOGETHER,
@@ -1818,7 +1816,7 @@ err_parse_dt:
 	return rc;
 }
 
-static int sdhci_tegra_remove(struct platform_device *pdev)
+static void sdhci_tegra_remove(struct platform_device *pdev)
 {
 	struct sdhci_host *host = platform_get_drvdata(pdev);
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
@@ -1834,8 +1832,6 @@ static int sdhci_tegra_remove(struct platform_device *pdev)
 
 	clk_disable_unprepare(tegra_host->tmclk);
 	sdhci_pltfm_free(pdev);
-
-	return 0;
 }
 
 static int __maybe_unused sdhci_tegra_runtime_suspend(struct device *dev)

@@ -30,6 +30,7 @@
  */
 #include <linux/delay.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/slab.h>
 MODULE_AUTHOR("Johannes Berg <johannes@sipsolutions.net>");
 MODULE_LICENSE("GPL");
@@ -1039,7 +1040,7 @@ static void onyx_i2c_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id onyx_i2c_id[] = {
-	{ "MAC,pcm3052", 0 },
+	{ "MAC,pcm3052" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c,onyx_i2c_id);
@@ -1048,7 +1049,7 @@ static struct i2c_driver onyx_driver = {
 	.driver = {
 		.name = "aoa_codec_onyx",
 	},
-	.probe_new = onyx_i2c_probe,
+	.probe = onyx_i2c_probe,
 	.remove = onyx_i2c_remove,
 	.id_table = onyx_i2c_id,
 };

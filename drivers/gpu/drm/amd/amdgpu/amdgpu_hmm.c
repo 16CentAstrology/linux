@@ -105,17 +105,11 @@ static bool amdgpu_hmm_invalidate_hsa(struct mmu_interval_notifier *mni,
 				      unsigned long cur_seq)
 {
 	struct amdgpu_bo *bo = container_of(mni, struct amdgpu_bo, notifier);
-	struct amdgpu_device *adev = amdgpu_ttm_adev(bo->tbo.bdev);
 
 	if (!mmu_notifier_range_blockable(range))
 		return false;
 
-	mutex_lock(&adev->notifier_lock);
-
-	mmu_interval_set_seq(mni, cur_seq);
-
-	amdgpu_amdkfd_evict_userptr(bo->kfd_bo, bo->notifier.mm);
-	mutex_unlock(&adev->notifier_lock);
+	amdgpu_amdkfd_evict_userptr(mni, cur_seq, bo->kfd_bo);
 
 	return true;
 }
@@ -135,13 +129,25 @@ static const struct mmu_interval_notifier_ops amdgpu_hmm_hsa_ops = {
  */
 int amdgpu_hmm_register(struct amdgpu_bo *bo, unsigned long addr)
 {
+	int r;
+
 	if (bo->kfd_bo)
-		return mmu_interval_notifier_insert(&bo->notifier, current->mm,
+		r = mmu_interval_notifier_insert(&bo->notifier, current->mm,
 						    addr, amdgpu_bo_size(bo),
 						    &amdgpu_hmm_hsa_ops);
-	return mmu_interval_notifier_insert(&bo->notifier, current->mm, addr,
-					    amdgpu_bo_size(bo),
-					    &amdgpu_hmm_gfx_ops);
+	else
+		r = mmu_interval_notifier_insert(&bo->notifier, current->mm, addr,
+							amdgpu_bo_size(bo),
+							&amdgpu_hmm_gfx_ops);
+	if (r)
+		/*
+		 * Make sure amdgpu_hmm_unregister() doesn't call
+		 * mmu_interval_notifier_remove() when the notifier isn't properly
+		 * initialized.
+		 */
+		bo->notifier.mm = NULL;
+
+	return r;
 }
 
 /**
@@ -196,19 +202,12 @@ int amdgpu_hmm_range_get_pages(struct mmu_interval_notifier *notifier,
 		pr_debug("hmm range: start = 0x%lx, end = 0x%lx",
 			hmm_range->start, hmm_range->end);
 
-		/* Assuming 512MB takes maxmium 1 second to fault page address */
-		timeout = max((hmm_range->end - hmm_range->start) >> 29, 1UL);
-		timeout *= HMM_RANGE_DEFAULT_TIMEOUT;
-		timeout = jiffies + msecs_to_jiffies(timeout);
+		timeout = jiffies + msecs_to_jiffies(HMM_RANGE_DEFAULT_TIMEOUT);
 
 retry:
 		hmm_range->notifier_seq = mmu_interval_read_begin(notifier);
 		r = hmm_range_fault(hmm_range);
 		if (unlikely(r)) {
-			/*
-			 * FIXME: This timeout should encompass the retry from
-			 * mmu_interval_read_retry() as well.
-			 */
 			if (r == -EBUSY && !time_after(jiffies, timeout))
 				goto retry;
 			goto out_free_pfns;
@@ -218,7 +217,6 @@ retry:
 			break;
 		hmm_range->hmm_pfns += MAX_WALK_BYTE >> PAGE_SHIFT;
 		hmm_range->start = hmm_range->end;
-		schedule();
 	} while (hmm_range->end < end);
 
 	hmm_range->start = start;
@@ -241,12 +239,14 @@ out_free_pfns:
 out_free_range:
 	kfree(hmm_range);
 
+	if (r == -EBUSY)
+		r = -EAGAIN;
 	return r;
 }
 
-int amdgpu_hmm_range_get_pages_done(struct hmm_range *hmm_range)
+bool amdgpu_hmm_range_get_pages_done(struct hmm_range *hmm_range)
 {
-	int r;
+	bool r;
 
 	r = mmu_interval_read_retry(hmm_range->notifier,
 				    hmm_range->notifier_seq);

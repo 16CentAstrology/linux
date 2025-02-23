@@ -117,13 +117,6 @@ struct bootrom_id_le {
 	__le32 boardrev;	/* Board revision */
 };
 
-struct brcmf_usb_image {
-	struct list_head list;
-	s8 *fwname;
-	u8 *image;
-	int image_len;
-};
-
 struct brcmf_usbdev_info {
 	struct brcmf_usbdev bus_pub; /* MUST BE FIRST */
 	spinlock_t qlock;
@@ -1243,8 +1236,8 @@ brcmf_usb_prepare_fw_request(struct brcmf_usbdev_info *devinfo)
 static int brcmf_usb_probe_cb(struct brcmf_usbdev_info *devinfo,
 			      enum brcmf_fwvendor fwvid)
 {
-	struct brcmf_bus *bus = NULL;
-	struct brcmf_usbdev *bus_pub = NULL;
+	struct brcmf_bus *bus;
+	struct brcmf_usbdev *bus_pub;
 	struct device *dev = devinfo->dev;
 	struct brcmf_fw_request *fwreq;
 	int ret;
@@ -1254,7 +1247,7 @@ static int brcmf_usb_probe_cb(struct brcmf_usbdev_info *devinfo,
 	if (!bus_pub)
 		return -ENODEV;
 
-	bus = kzalloc(sizeof(struct brcmf_bus), GFP_ATOMIC);
+	bus = kzalloc(sizeof(*bus), GFP_ATOMIC);
 	if (!bus) {
 		ret = -ENOMEM;
 		goto fail;
@@ -1279,6 +1272,9 @@ static int brcmf_usb_probe_cb(struct brcmf_usbdev_info *devinfo,
 		ret = -ENOMEM;
 		goto fail;
 	}
+	ret = PTR_ERR_OR_ZERO(devinfo->settings);
+	if (ret < 0)
+		goto fail;
 
 	if (!brcmf_usb_dlneeded(devinfo)) {
 		ret = brcmf_alloc(devinfo->dev, devinfo->settings);
@@ -1331,6 +1327,9 @@ brcmf_usb_disconnect_cb(struct brcmf_usbdev_info *devinfo)
 	brcmf_usb_detach(devinfo);
 }
 
+/* Forward declaration for usb_match_id() call */
+static const struct usb_device_id brcmf_usb_devid_table[];
+
 static int
 brcmf_usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 {
@@ -1341,6 +1340,14 @@ brcmf_usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	int ret = 0;
 	u32 num_of_eps;
 	u8 endpoint_num, ep;
+
+	if (!id) {
+		id = usb_match_id(intf, brcmf_usb_devid_table);
+		if (!id) {
+			dev_err(&intf->dev, "Error could not find matching usb_device_id\n");
+			return -ENODEV;
+		}
+	}
 
 	brcmf_dbg(USB, "Enter 0x%04x:0x%04x\n", id->idVendor, id->idProduct);
 
@@ -1570,7 +1577,7 @@ static int brcmf_usb_reset_device(struct device *dev, void *notused)
 
 void brcmf_usb_exit(void)
 {
-	struct device_driver *drv = &brcmf_usbdrvr.drvwrap.driver;
+	struct device_driver *drv = &brcmf_usbdrvr.driver;
 	int ret;
 
 	brcmf_dbg(USB, "Enter\n");

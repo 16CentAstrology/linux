@@ -12,7 +12,7 @@
 #include <linux/netdevice.h>
 #include <linux/if_arp.h>
 #include <linux/crc-ccitt.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <net/rtnetlink.h>
 #include <net/ieee802154_netdev.h>
@@ -34,8 +34,8 @@ void ieee802154_xmit_sync_worker(struct work_struct *work)
 	if (res)
 		goto err_tx;
 
-	dev->stats.tx_packets++;
-	dev->stats.tx_bytes += skb->len;
+	DEV_STATS_INC(dev, tx_packets);
+	DEV_STATS_ADD(dev, tx_bytes, skb->len);
 
 	ieee802154_xmit_complete(&local->hw, skb, false);
 
@@ -90,8 +90,8 @@ ieee802154_tx(struct ieee802154_local *local, struct sk_buff *skb)
 		if (ret)
 			goto err_wake_netif_queue;
 
-		dev->stats.tx_packets++;
-		dev->stats.tx_bytes += len;
+		DEV_STATS_INC(dev, tx_packets);
+		DEV_STATS_ADD(dev, tx_bytes, len);
 	} else {
 		local->tx_skb = skb;
 		queue_work(local->workqueue, &local->sync_tx_work);
@@ -137,34 +137,37 @@ int ieee802154_mlme_op_pre(struct ieee802154_local *local)
 	return ieee802154_sync_and_hold_queue(local);
 }
 
+int ieee802154_mlme_tx_locked(struct ieee802154_local *local,
+			      struct ieee802154_sub_if_data *sdata,
+			      struct sk_buff *skb)
+{
+	/* Avoid possible calls to ->ndo_stop() when we asynchronously perform
+	 * MLME transmissions.
+	 */
+	ASSERT_RTNL();
+
+	/* Ensure the device was not stopped, otherwise error out */
+	if (!local->open_count)
+		return -ENETDOWN;
+
+	/* Warn if the ieee802154 core thinks MLME frames can be sent while the
+	 * net interface expects this cannot happen.
+	 */
+	if (WARN_ON_ONCE(!netif_running(sdata->dev)))
+		return -ENETDOWN;
+
+	ieee802154_tx(local, skb);
+	return ieee802154_sync_queue(local);
+}
+
 int ieee802154_mlme_tx(struct ieee802154_local *local,
 		       struct ieee802154_sub_if_data *sdata,
 		       struct sk_buff *skb)
 {
 	int ret;
 
-	/* Avoid possible calls to ->ndo_stop() when we asynchronously perform
-	 * MLME transmissions.
-	 */
 	rtnl_lock();
-
-	/* Ensure the device was not stopped, otherwise error out */
-	if (!local->open_count) {
-		rtnl_unlock();
-		return -ENETDOWN;
-	}
-
-	/* Warn if the ieee802154 core thinks MLME frames can be sent while the
-	 * net interface expects this cannot happen.
-	 */
-	if (WARN_ON_ONCE(!netif_running(sdata->dev))) {
-		rtnl_unlock();
-		return -ENETDOWN;
-	}
-
-	ieee802154_tx(local, skb);
-	ret = ieee802154_sync_queue(local);
-
+	ret = ieee802154_mlme_tx_locked(local, sdata, skb);
 	rtnl_unlock();
 
 	return ret;
@@ -175,14 +178,14 @@ void ieee802154_mlme_op_post(struct ieee802154_local *local)
 	ieee802154_release_queue(local);
 }
 
-int ieee802154_mlme_tx_one(struct ieee802154_local *local,
-			   struct ieee802154_sub_if_data *sdata,
-			   struct sk_buff *skb)
+int ieee802154_mlme_tx_one_locked(struct ieee802154_local *local,
+				  struct ieee802154_sub_if_data *sdata,
+				  struct sk_buff *skb)
 {
 	int ret;
 
 	ieee802154_mlme_op_pre(local);
-	ret = ieee802154_mlme_tx(local, sdata, skb);
+	ret = ieee802154_mlme_tx_locked(local, sdata, skb);
 	ieee802154_mlme_op_post(local);
 
 	return ret;

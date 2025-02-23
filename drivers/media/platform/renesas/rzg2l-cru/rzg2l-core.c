@@ -14,7 +14,6 @@
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/of_graph.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -73,7 +72,6 @@ static int rzg2l_cru_group_notify_complete(struct v4l2_async_notifier *notifier)
 			source->name, sink->name);
 		return ret;
 	}
-	cru->csi.channel = 0;
 	cru->ip.remote = cru->csi.subdev;
 
 	/* Create media device link between CRU IP <-> CRU OUTPUT */
@@ -93,7 +91,7 @@ static int rzg2l_cru_group_notify_complete(struct v4l2_async_notifier *notifier)
 
 static void rzg2l_cru_group_notify_unbind(struct v4l2_async_notifier *notifier,
 					  struct v4l2_subdev *subdev,
-					  struct v4l2_async_subdev *asd)
+					  struct v4l2_async_connection *asd)
 {
 	struct rzg2l_cru_dev *cru = notifier_to_cru(notifier);
 
@@ -111,7 +109,7 @@ static void rzg2l_cru_group_notify_unbind(struct v4l2_async_notifier *notifier,
 
 static int rzg2l_cru_group_notify_bound(struct v4l2_async_notifier *notifier,
 					struct v4l2_subdev *subdev,
-					struct v4l2_async_subdev *asd)
+					struct v4l2_async_connection *asd)
 {
 	struct rzg2l_cru_dev *cru = notifier_to_cru(notifier);
 
@@ -139,7 +137,7 @@ static int rzg2l_cru_mc_parse_of(struct rzg2l_cru_dev *cru)
 		.bus_type = V4L2_MBUS_CSI2_DPHY,
 	};
 	struct fwnode_handle *ep, *fwnode;
-	struct v4l2_async_subdev *asd;
+	struct v4l2_async_connection *asd;
 	int ret;
 
 	ep = fwnode_graph_get_endpoint_by_id(dev_fwnode(cru->dev), 1, 0, 0);
@@ -163,7 +161,7 @@ static int rzg2l_cru_mc_parse_of(struct rzg2l_cru_dev *cru)
 	}
 
 	asd = v4l2_async_nf_add_fwnode(&cru->notifier, fwnode,
-				       struct v4l2_async_subdev);
+				       struct v4l2_async_connection);
 	if (IS_ERR(asd)) {
 		ret = PTR_ERR(asd);
 		goto out;
@@ -183,7 +181,7 @@ static int rzg2l_cru_mc_parse_of_graph(struct rzg2l_cru_dev *cru)
 {
 	int ret;
 
-	v4l2_async_nf_init(&cru->notifier);
+	v4l2_async_nf_init(&cru->notifier, &cru->v4l2_dev);
 
 	ret = rzg2l_cru_mc_parse_of(cru);
 	if (ret)
@@ -191,10 +189,10 @@ static int rzg2l_cru_mc_parse_of_graph(struct rzg2l_cru_dev *cru)
 
 	cru->notifier.ops = &rzg2l_cru_async_ops;
 
-	if (list_empty(&cru->notifier.asd_list))
+	if (list_empty(&cru->notifier.waiting_list))
 		return 0;
 
-	ret = v4l2_async_nf_register(&cru->v4l2_dev, &cru->notifier);
+	ret = v4l2_async_nf_register(&cru->notifier);
 	if (ret < 0) {
 		dev_err(cru->dev, "Notifier registration failed\n");
 		v4l2_async_nf_cleanup(&cru->notifier);
@@ -210,7 +208,7 @@ static int rzg2l_cru_media_init(struct rzg2l_cru_dev *cru)
 	const struct of_device_id *match;
 	int ret;
 
-	cru->pad.flags = MEDIA_PAD_FL_SINK;
+	cru->pad.flags = MEDIA_PAD_FL_SINK | MEDIA_PAD_FL_MUST_CONNECT;
 	ret = media_entity_pads_init(&cru->vdev.entity, 1, &cru->pad);
 	if (ret)
 		return ret;
@@ -243,7 +241,7 @@ static int rzg2l_cru_media_init(struct rzg2l_cru_dev *cru)
 static int rzg2l_cru_probe(struct platform_device *pdev)
 {
 	struct rzg2l_cru_dev *cru;
-	int ret;
+	int irq, ret;
 
 	cru = devm_kzalloc(&pdev->dev, sizeof(*cru), GFP_KERNEL);
 	if (!cru)
@@ -271,9 +269,14 @@ static int rzg2l_cru_probe(struct platform_device *pdev)
 	cru->dev = &pdev->dev;
 	cru->info = of_device_get_match_data(&pdev->dev);
 
-	cru->image_conv_irq = platform_get_irq(pdev, 0);
-	if (cru->image_conv_irq < 0)
-		return cru->image_conv_irq;
+	irq = platform_get_irq(pdev, 0);
+	if (irq < 0)
+		return irq;
+
+	ret = devm_request_irq(&pdev->dev, irq, rzg2l_cru_irq, 0,
+			       KBUILD_MODNAME, cru);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret, "failed to request irq\n");
 
 	platform_set_drvdata(pdev, cru);
 
@@ -298,7 +301,7 @@ error_dma_unregister:
 	return ret;
 }
 
-static int rzg2l_cru_remove(struct platform_device *pdev)
+static void rzg2l_cru_remove(struct platform_device *pdev)
 {
 	struct rzg2l_cru_dev *cru = platform_get_drvdata(pdev);
 
@@ -312,8 +315,6 @@ static int rzg2l_cru_remove(struct platform_device *pdev)
 	mutex_destroy(&cru->mdev_lock);
 
 	rzg2l_cru_dma_unregister(cru);
-
-	return 0;
 }
 
 static const struct of_device_id rzg2l_cru_of_id_table[] = {

@@ -16,6 +16,8 @@
 
 #include "match.h"
 
+extern struct aa_dfa *stacksplitdfa;
+
 /*
  * DEBUG remains global (no per profile flag) since it is mostly used in sysctl
  * which is not related to profile accesses.
@@ -57,7 +59,6 @@ extern int apparmor_initialized;
 
 /* fn's in lib */
 const char *skipn_spaces(const char *str, size_t n);
-char *aa_split_fqname(char *args, char **ns_name);
 const char *aa_splitn_fqname(const char *fqname, size_t n, const char **ns_name,
 			     size_t *ns_len);
 void aa_info_message(const char *str);
@@ -232,7 +233,7 @@ void aa_policy_destroy(struct aa_policy *policy);
  */
 #define fn_label_build(L, P, GFP, FN)					\
 ({									\
-	__label__ __cleanup, __done;					\
+	__label__ __do_cleanup, __done;					\
 	struct aa_label *__new_;					\
 									\
 	if ((L)->size > 1) {						\
@@ -250,7 +251,7 @@ void aa_policy_destroy(struct aa_policy *policy);
 			__new_ = (FN);					\
 			AA_BUG(!__new_);				\
 			if (IS_ERR(__new_))				\
-				goto __cleanup;				\
+				goto __do_cleanup;			\
 			__lvec[__j++] = __new_;				\
 		}							\
 		for (__j = __count = 0; __j < (L)->size; __j++)		\
@@ -272,7 +273,7 @@ void aa_policy_destroy(struct aa_policy *policy);
 			vec_cleanup(profile, __pvec, __count);		\
 		} else							\
 			__new_ = NULL;					\
-__cleanup:								\
+__do_cleanup:								\
 		vec_cleanup(label, __lvec, (L)->size);			\
 	} else {							\
 		(P) = labels_profile(L);				\

@@ -14,7 +14,6 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/poll.h>
 #include <linux/regmap.h>
@@ -642,7 +641,7 @@ static int aspeed_kcs_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int aspeed_kcs_remove(struct platform_device *pdev)
+static void aspeed_kcs_remove(struct platform_device *pdev)
 {
 	struct aspeed_kcs_bmc *priv = platform_get_drvdata(pdev);
 	struct kcs_bmc_device *kcs_bmc = &priv->kcs_bmc;
@@ -657,8 +656,6 @@ static int aspeed_kcs_remove(struct platform_device *pdev)
 	priv->obe.remove = true;
 	spin_unlock_irq(&priv->obe.lock);
 	del_timer_sync(&priv->obe.timer);
-
-	return 0;
 }
 
 static const struct of_device_id ast_kcs_bmc_match[] = {

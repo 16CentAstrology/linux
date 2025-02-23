@@ -48,9 +48,9 @@ struct mei_me_client *mei_me_cl_get(struct mei_me_client *me_cl)
 /**
  * mei_me_cl_release - free me client
  *
- * Locking: called under "dev->device_lock" lock
- *
  * @ref: me_client refcount
+ *
+ * Locking: called under "dev->device_lock" lock
  */
 static void mei_me_cl_release(struct kref *ref)
 {
@@ -63,9 +63,9 @@ static void mei_me_cl_release(struct kref *ref)
 /**
  * mei_me_cl_put - decrease me client refcount and free client if necessary
  *
- * Locking: called under "dev->device_lock" lock
- *
  * @me_cl: me client
+ *
+ * Locking: called under "dev->device_lock" lock
  */
 void mei_me_cl_put(struct mei_me_client *me_cl)
 {
@@ -321,7 +321,7 @@ void mei_io_cb_free(struct mei_cl_cb *cb)
 		return;
 
 	list_del(&cb->list);
-	kfree(cb->buf.data);
+	kvfree(cb->buf.data);
 	kfree(cb->ext_hdr);
 	kfree(cb);
 }
@@ -329,10 +329,10 @@ void mei_io_cb_free(struct mei_cl_cb *cb)
 /**
  * mei_tx_cb_enqueue - queue tx callback
  *
- * Locking: called under "dev->device_lock" lock
- *
  * @cb: mei callback struct
  * @head: an instance of list to queue on
+ *
+ * Locking: called under "dev->device_lock" lock
  */
 static inline void mei_tx_cb_enqueue(struct mei_cl_cb *cb,
 				     struct list_head *head)
@@ -344,9 +344,9 @@ static inline void mei_tx_cb_enqueue(struct mei_cl_cb *cb,
 /**
  * mei_tx_cb_dequeue - dequeue tx callback
  *
- * Locking: called under "dev->device_lock" lock
- *
  * @cb: mei callback struct to dequeue and free
+ *
+ * Locking: called under "dev->device_lock" lock
  */
 static inline void mei_tx_cb_dequeue(struct mei_cl_cb *cb)
 {
@@ -359,10 +359,10 @@ static inline void mei_tx_cb_dequeue(struct mei_cl_cb *cb)
 /**
  * mei_cl_set_read_by_fp - set pending_read flag to vtag struct for given fp
  *
- * Locking: called under "dev->device_lock" lock
- *
  * @cl: mei client
  * @fp: pointer to file structure
+ *
+ * Locking: called under "dev->device_lock" lock
  */
 static void mei_cl_set_read_by_fp(const struct mei_cl *cl,
 				  const struct file *fp)
@@ -497,7 +497,7 @@ struct mei_cl_cb *mei_cl_alloc_cb(struct mei_cl *cl, size_t length,
 	if (length == 0)
 		return cb;
 
-	cb->buf.data = kmalloc(roundup(length, MEI_SLOT_SIZE), GFP_KERNEL);
+	cb->buf.data = kvmalloc(roundup(length, MEI_SLOT_SIZE), GFP_KERNEL);
 	if (!cb->buf.data) {
 		mei_io_cb_free(cb);
 		return NULL;
@@ -1343,7 +1343,9 @@ static void mei_cl_reset_read_by_vtag(const struct mei_cl *cl, u8 vtag)
 	struct mei_cl_vtag *vtag_l;
 
 	list_for_each_entry(vtag_l, &cl->vtag_map, list) {
-		if (vtag_l->vtag == vtag) {
+		/* The client on bus has one fixed vtag map */
+		if ((cl->cldev && mei_cldev_enabled(cl->cldev)) ||
+		    vtag_l->vtag == vtag) {
 			vtag_l->pending_read = false;
 			break;
 		}
@@ -1954,10 +1956,13 @@ err:
  *
  * @cl: host client
  * @cb: write callback with filled data
+ * @timeout: send timeout in milliseconds.
+ *           effective only for blocking writes: the cb->blocking is set.
+ *           set timeout to the MAX_SCHEDULE_TIMEOUT to maixum allowed wait.
  *
  * Return: number of bytes sent on success, <0 on failure.
  */
-ssize_t mei_cl_write(struct mei_cl *cl, struct mei_cl_cb *cb)
+ssize_t mei_cl_write(struct mei_cl *cl, struct mei_cl_cb *cb, unsigned long timeout)
 {
 	struct mei_device *dev;
 	struct mei_msg_data *buf;
@@ -2006,7 +2011,7 @@ ssize_t mei_cl_write(struct mei_cl *cl, struct mei_cl_cb *cb)
 
 	mei_hdr = mei_msg_hdr_init(cb);
 	if (IS_ERR(mei_hdr)) {
-		rets = -PTR_ERR(mei_hdr);
+		rets = PTR_ERR(mei_hdr);
 		mei_hdr = NULL;
 		goto err;
 	}
@@ -2027,7 +2032,7 @@ ssize_t mei_cl_write(struct mei_cl *cl, struct mei_cl_cb *cb)
 
 	hbuf_slots = mei_hbuf_empty_slots(dev);
 	if (hbuf_slots < 0) {
-		rets = -EOVERFLOW;
+		buf_len = -EOVERFLOW;
 		goto out;
 	}
 
@@ -2081,11 +2086,20 @@ out:
 	if (blocking && cl->writing_state != MEI_WRITE_COMPLETE) {
 
 		mutex_unlock(&dev->device_lock);
-		rets = wait_event_interruptible(cl->tx_wait,
-				cl->writing_state == MEI_WRITE_COMPLETE ||
-				(!mei_cl_is_connected(cl)));
+		rets = wait_event_interruptible_timeout(cl->tx_wait,
+							cl->writing_state == MEI_WRITE_COMPLETE ||
+							(!mei_cl_is_connected(cl)),
+							msecs_to_jiffies(timeout));
 		mutex_lock(&dev->device_lock);
+		/* clean all queue on timeout as something fatal happened */
+		if (rets == 0) {
+			rets = -ETIME;
+			mei_io_tx_list_free_cl(&dev->write_list, cl, NULL);
+			mei_io_tx_list_free_cl(&dev->write_waiting_list, cl, NULL);
+		}
 		/* wait_event_interruptible returns -ERESTARTSYS */
+		if (rets > 0)
+			rets = 0;
 		if (rets) {
 			if (signal_pending(current))
 				rets = -EINTR;

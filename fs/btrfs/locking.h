@@ -8,8 +8,13 @@
 
 #include <linux/atomic.h>
 #include <linux/wait.h>
+#include <linux/lockdep.h>
 #include <linux/percpu_counter.h>
 #include "extent_io.h"
+
+struct extent_buffer;
+struct btrfs_path;
+struct btrfs_root;
 
 #define BTRFS_WRITE_LOCK 1
 #define BTRFS_READ_LOCK 2
@@ -79,7 +84,7 @@ enum btrfs_lock_nesting {
 };
 
 enum btrfs_lockdep_trans_states {
-	BTRFS_LOCKDEP_TRANS_COMMIT_START,
+	BTRFS_LOCKDEP_TRANS_COMMIT_PREP,
 	BTRFS_LOCKDEP_TRANS_UNBLOCKED,
 	BTRFS_LOCKDEP_TRANS_SUPER_COMMITTED,
 	BTRFS_LOCKDEP_TRANS_COMPLETED,
@@ -124,6 +129,16 @@ enum btrfs_lockdep_trans_states {
 	rwsem_release(&owner->lock##_map, _THIS_IP_)
 
 /*
+ * Used to account for the fact that when doing io_uring encoded I/O, we can
+ * return to userspace with the inode lock still held.
+ */
+#define btrfs_lockdep_inode_acquire(owner, lock)				\
+	rwsem_acquire_read(&owner->vfs_inode.lock.dep_map, 0, 0, _THIS_IP_)
+
+#define btrfs_lockdep_inode_release(owner, lock)				\
+	rwsem_release(&owner->vfs_inode.lock.dep_map, _THIS_IP_)
+
+/*
  * Macros for the transaction states wait events, similar to the generic wait
  * event macros.
  */
@@ -157,17 +172,24 @@ enum btrfs_lockdep_trans_states {
 static_assert(BTRFS_NESTING_MAX <= MAX_LOCKDEP_SUBCLASSES,
 	      "too many lock subclasses defined");
 
-struct btrfs_path;
+void btrfs_tree_lock_nested(struct extent_buffer *eb, enum btrfs_lock_nesting nest);
 
-void __btrfs_tree_lock(struct extent_buffer *eb, enum btrfs_lock_nesting nest);
-void btrfs_tree_lock(struct extent_buffer *eb);
+static inline void btrfs_tree_lock(struct extent_buffer *eb)
+{
+	btrfs_tree_lock_nested(eb, BTRFS_NESTING_NORMAL);
+}
+
 void btrfs_tree_unlock(struct extent_buffer *eb);
 
-void __btrfs_tree_read_lock(struct extent_buffer *eb, enum btrfs_lock_nesting nest);
-void btrfs_tree_read_lock(struct extent_buffer *eb);
+void btrfs_tree_read_lock_nested(struct extent_buffer *eb, enum btrfs_lock_nesting nest);
+
+static inline void btrfs_tree_read_lock(struct extent_buffer *eb)
+{
+	btrfs_tree_read_lock_nested(eb, BTRFS_NESTING_NORMAL);
+}
+
 void btrfs_tree_read_unlock(struct extent_buffer *eb);
 int btrfs_try_tree_read_lock(struct extent_buffer *eb);
-int btrfs_try_tree_write_lock(struct extent_buffer *eb);
 struct extent_buffer *btrfs_lock_root_node(struct btrfs_root *root);
 struct extent_buffer *btrfs_read_lock_root_node(struct btrfs_root *root);
 struct extent_buffer *btrfs_try_read_lock_root_node(struct btrfs_root *root);
@@ -177,8 +199,13 @@ static inline void btrfs_assert_tree_write_locked(struct extent_buffer *eb)
 {
 	lockdep_assert_held_write(&eb->lock);
 }
+static inline void btrfs_assert_tree_read_locked(struct extent_buffer *eb)
+{
+	lockdep_assert_held_read(&eb->lock);
+}
 #else
 static inline void btrfs_assert_tree_write_locked(struct extent_buffer *eb) { }
+static inline void btrfs_assert_tree_read_locked(struct extent_buffer *eb) { }
 #endif
 
 void btrfs_unlock_up_safe(struct btrfs_path *path, int level);
@@ -195,13 +222,12 @@ static inline void btrfs_tree_unlock_rw(struct extent_buffer *eb, int rw)
 
 struct btrfs_drew_lock {
 	atomic_t readers;
-	struct percpu_counter writers;
+	atomic_t writers;
 	wait_queue_head_t pending_writers;
 	wait_queue_head_t pending_readers;
 };
 
-int btrfs_drew_lock_init(struct btrfs_drew_lock *lock);
-void btrfs_drew_lock_destroy(struct btrfs_drew_lock *lock);
+void btrfs_drew_lock_init(struct btrfs_drew_lock *lock);
 void btrfs_drew_write_lock(struct btrfs_drew_lock *lock);
 bool btrfs_drew_try_write_lock(struct btrfs_drew_lock *lock);
 void btrfs_drew_write_unlock(struct btrfs_drew_lock *lock);

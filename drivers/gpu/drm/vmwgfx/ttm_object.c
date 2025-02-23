@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 OR MIT */
 /**************************************************************************
  *
- * Copyright (c) 2009-2022 VMware, Inc., Palo Alto, CA., USA
+ * Copyright (c) 2009-2023 VMware, Inc., Palo Alto, CA., USA
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -54,7 +54,7 @@
 #include <linux/module.h>
 #include <linux/hashtable.h>
 
-MODULE_IMPORT_NS(DMA_BUF);
+MODULE_IMPORT_NS("DMA_BUF");
 
 #define VMW_TTM_OBJECT_REF_HT_ORDER 10
 
@@ -87,14 +87,11 @@ struct ttm_object_file {
  *
  * @object_lock: lock that protects idr.
  *
- * @object_count: Per device object count.
- *
  * This is the per-device data structure needed for ttm object management.
  */
 
 struct ttm_object_device {
 	spinlock_t object_lock;
-	atomic_t object_count;
 	struct dma_buf_ops ops;
 	void (*dmabuf_release)(struct dma_buf *dma_buf);
 	struct idr idr;
@@ -254,40 +251,6 @@ void ttm_base_object_unref(struct ttm_base_object **p_base)
 	kref_put(&base->refcount, ttm_release_base);
 }
 
-/**
- * ttm_base_object_noref_lookup - look up a base object without reference
- * @tfile: The struct ttm_object_file the object is registered with.
- * @key: The object handle.
- *
- * This function looks up a ttm base object and returns a pointer to it
- * without refcounting the pointer. The returned pointer is only valid
- * until ttm_base_object_noref_release() is called, and the object
- * pointed to by the returned pointer may be doomed. Any persistent usage
- * of the object requires a refcount to be taken using kref_get_unless_zero().
- * Iff this function returns successfully it needs to be paired with
- * ttm_base_object_noref_release() and no sleeping- or scheduling functions
- * may be called inbetween these function callse.
- *
- * Return: A pointer to the object if successful or NULL otherwise.
- */
-struct ttm_base_object *
-ttm_base_object_noref_lookup(struct ttm_object_file *tfile, uint64_t key)
-{
-	struct vmwgfx_hash_item *hash;
-	int ret;
-
-	rcu_read_lock();
-	ret = ttm_tfile_find_ref_rcu(tfile, key, &hash);
-	if (ret) {
-		rcu_read_unlock();
-		return NULL;
-	}
-
-	__release(RCU);
-	return hlist_entry(hash, struct ttm_ref_object, hash)->obj;
-}
-EXPORT_SYMBOL(ttm_base_object_noref_lookup);
-
 struct ttm_base_object *ttm_base_object_lookup(struct ttm_object_file *tfile,
 					       uint64_t key)
 {
@@ -295,15 +258,16 @@ struct ttm_base_object *ttm_base_object_lookup(struct ttm_object_file *tfile,
 	struct vmwgfx_hash_item *hash;
 	int ret;
 
-	rcu_read_lock();
-	ret = ttm_tfile_find_ref_rcu(tfile, key, &hash);
+	spin_lock(&tfile->lock);
+	ret = ttm_tfile_find_ref(tfile, key, &hash);
 
 	if (likely(ret == 0)) {
 		base = hlist_entry(hash, struct ttm_ref_object, hash)->obj;
 		if (!kref_get_unless_zero(&base->refcount))
 			base = NULL;
 	}
-	rcu_read_unlock();
+	spin_unlock(&tfile->lock);
+
 
 	return base;
 }
@@ -464,7 +428,6 @@ ttm_object_device_init(const struct dma_buf_ops *ops)
 		return NULL;
 
 	spin_lock_init(&tdev->object_lock);
-	atomic_set(&tdev->object_count, 0);
 
 	/*
 	 * Our base is at VMWGFX_NUM_MOB + 1 because we want to create
@@ -508,7 +471,7 @@ void ttm_object_device_release(struct ttm_object_device **p_tdev)
  */
 static bool __must_check get_dma_buf_unless_doomed(struct dma_buf *dmabuf)
 {
-	return atomic_long_inc_not_zero(&dmabuf->file->f_count) != 0L;
+	return file_ref_get(&dmabuf->file->f_ref);
 }
 
 /**
@@ -681,7 +644,6 @@ out_unref:
  * @tfile: struct ttm_object_file identifying the caller
  * @size: The size of the dma_bufs we export.
  * @prime: The object to be initialized.
- * @shareable: See ttm_base_object_init
  * @type: See ttm_base_object_init
  * @refcount_release: See ttm_base_object_init
  *
@@ -689,10 +651,11 @@ out_unref:
  * for data sharing between processes and devices.
  */
 int ttm_prime_object_init(struct ttm_object_file *tfile, size_t size,
-			  struct ttm_prime_object *prime, bool shareable,
+			  struct ttm_prime_object *prime,
 			  enum ttm_object_type type,
 			  void (*refcount_release) (struct ttm_base_object **))
 {
+	bool shareable = !!(type == VMW_RES_SURFACE);
 	mutex_init(&prime->mutex);
 	prime->size = PAGE_ALIGN(size);
 	prime->real_type = type;

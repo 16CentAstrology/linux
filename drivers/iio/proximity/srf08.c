@@ -66,7 +66,7 @@ struct srf08_data {
 	/* Ensure timestamp is naturally aligned */
 	struct {
 		s16 chan;
-		s64 timestamp __aligned(8);
+		aligned_s64 timestamp;
 	} scan;
 
 	/* Sensor-Type */
@@ -443,9 +443,9 @@ static const struct iio_info srf02_info = {
 	.read_raw = srf08_read_raw,
 };
 
-static int srf08_probe(struct i2c_client *client,
-					 const struct i2c_device_id *id)
+static int srf08_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct iio_dev *indio_dev;
 	struct srf08_data *data;
 	int ret;

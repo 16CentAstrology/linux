@@ -884,11 +884,6 @@ struct safexcel_alg_template {
 	} alg;
 };
 
-struct safexcel_inv_result {
-	struct completion completion;
-	int error;
-};
-
 void safexcel_dequeue(struct safexcel_crypto_priv *priv, int ring);
 int safexcel_rdesc_check_errors(struct safexcel_crypto_priv *priv,
 				void *rdp);
@@ -902,7 +897,6 @@ int safexcel_init_ring_descriptors(struct safexcel_crypto_priv *priv,
 int safexcel_select_ring(struct safexcel_crypto_priv *priv);
 void *safexcel_ring_next_rptr(struct safexcel_crypto_priv *priv,
 			      struct safexcel_desc_ring *ring);
-void *safexcel_ring_first_rptr(struct safexcel_crypto_priv *priv, int  ring);
 void safexcel_ring_rollback_wptr(struct safexcel_crypto_priv *priv,
 				 struct safexcel_desc_ring *ring);
 struct safexcel_command_desc *safexcel_add_cdesc(struct safexcel_crypto_priv *priv,
@@ -927,7 +921,6 @@ void safexcel_rdr_req_set(struct safexcel_crypto_priv *priv,
 			  struct crypto_async_request *req);
 inline struct crypto_async_request *
 safexcel_rdr_req_get(struct safexcel_crypto_priv *priv, int ring);
-void safexcel_inv_complete(struct crypto_async_request *req, int error);
 int safexcel_hmac_setkey(struct safexcel_context *base, const u8 *key,
 			 unsigned int keylen, const char *alg,
 			 unsigned int state_sz);
@@ -939,8 +932,6 @@ extern struct safexcel_alg_template safexcel_alg_ecb_des3_ede;
 extern struct safexcel_alg_template safexcel_alg_cbc_des3_ede;
 extern struct safexcel_alg_template safexcel_alg_ecb_aes;
 extern struct safexcel_alg_template safexcel_alg_cbc_aes;
-extern struct safexcel_alg_template safexcel_alg_cfb_aes;
-extern struct safexcel_alg_template safexcel_alg_ofb_aes;
 extern struct safexcel_alg_template safexcel_alg_ctr_aes;
 extern struct safexcel_alg_template safexcel_alg_md5;
 extern struct safexcel_alg_template safexcel_alg_sha1;
@@ -979,8 +970,6 @@ extern struct safexcel_alg_template safexcel_alg_sm3;
 extern struct safexcel_alg_template safexcel_alg_hmac_sm3;
 extern struct safexcel_alg_template safexcel_alg_ecb_sm4;
 extern struct safexcel_alg_template safexcel_alg_cbc_sm4;
-extern struct safexcel_alg_template safexcel_alg_ofb_sm4;
-extern struct safexcel_alg_template safexcel_alg_cfb_sm4;
 extern struct safexcel_alg_template safexcel_alg_ctr_sm4;
 extern struct safexcel_alg_template safexcel_alg_authenc_hmac_sha1_cbc_sm4;
 extern struct safexcel_alg_template safexcel_alg_authenc_hmac_sm3_cbc_sm4;

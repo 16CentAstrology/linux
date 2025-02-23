@@ -171,7 +171,7 @@ int ipv6_skb_to_auditdata(struct sk_buff *skb,
 
 static inline void print_ipv6_addr(struct audit_buffer *ab,
 				   const struct in6_addr *addr, __be16 port,
-				   char *name1, char *name2)
+				   const char *name1, const char *name2)
 {
 	if (!ipv6_addr_any(addr))
 		audit_log_format(ab, " %s=%pI6c", name1, addr);
@@ -180,7 +180,7 @@ static inline void print_ipv6_addr(struct audit_buffer *ab,
 }
 
 static inline void print_ipv4_addr(struct audit_buffer *ab, __be32 addr,
-				   __be16 port, char *name1, char *name2)
+				   __be16 port, const char *name1, const char *name2)
 {
 	if (addr)
 		audit_log_format(ab, " %s=%pI4", name1, &addr);
@@ -200,14 +200,14 @@ static void dump_common_audit_data(struct audit_buffer *ab,
 	char comm[sizeof(current->comm)];
 
 	/*
-	 * To keep stack sizes in check force programers to notice if they
+	 * To keep stack sizes in check force programmers to notice if they
 	 * start making this union too large!  See struct lsm_network_audit
 	 * as an example of how to deal with large data.
 	 */
 	BUILD_BUG_ON(sizeof(a->u) > sizeof(void *)*2);
 
 	audit_log_format(ab, " pid=%d comm=", task_tgid_nr(current));
-	audit_log_untrustedstring(ab, memcpy(comm, current->comm, sizeof(comm)));
+	audit_log_untrustedstring(ab, get_task_comm(comm, current));
 
 	switch (a->type) {
 	case LSM_AUDIT_DATA_NONE:
@@ -299,10 +299,10 @@ static void dump_common_audit_data(struct audit_buffer *ab,
 		if (tsk) {
 			pid_t pid = task_tgid_nr(tsk);
 			if (pid) {
-				char comm[sizeof(tsk->comm)];
+				char tskcomm[sizeof(tsk->comm)];
 				audit_log_format(ab, " opid=%d ocomm=", pid);
 				audit_log_untrustedstring(ab,
-				    memcpy(comm, tsk->comm, sizeof(comm)));
+				    get_task_comm(tskcomm, tsk));
 			}
 		}
 		break;
@@ -310,14 +310,14 @@ static void dump_common_audit_data(struct audit_buffer *ab,
 	case LSM_AUDIT_DATA_NET:
 		if (a->u.net->sk) {
 			const struct sock *sk = a->u.net->sk;
-			struct unix_sock *u;
+			const struct unix_sock *u;
 			struct unix_address *addr;
 			int len = 0;
 			char *p = NULL;
 
 			switch (sk->sk_family) {
 			case AF_INET: {
-				struct inet_sock *inet = inet_sk(sk);
+				const struct inet_sock *inet = inet_sk(sk);
 
 				print_ipv4_addr(ab, inet->inet_rcv_saddr,
 						inet->inet_sport,
@@ -329,7 +329,7 @@ static void dump_common_audit_data(struct audit_buffer *ab,
 			}
 #if IS_ENABLED(CONFIG_IPV6)
 			case AF_INET6: {
-				struct inet_sock *inet = inet_sk(sk);
+				const struct inet_sock *inet = inet_sk(sk);
 
 				print_ipv6_addr(ab, &sk->sk_v6_rcv_saddr,
 						inet->inet_sport,
@@ -424,6 +424,9 @@ static void dump_common_audit_data(struct audit_buffer *ab,
 		break;
 	case LSM_AUDIT_DATA_ANONINODE:
 		audit_log_format(ab, " anonclass=%s", a->u.anonclass);
+		break;
+	case LSM_AUDIT_DATA_NLMSGTYPE:
+		audit_log_format(ab, " nl-msgtype=%hu", a->u.nlmsg_type);
 		break;
 	} /* switch (a->type) */
 }

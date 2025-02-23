@@ -140,9 +140,6 @@ extern const char *kdb_diemsg;
 
 extern unsigned int kdb_flags;	/* Global flags, see kdb_state for per cpu state */
 
-extern void kdb_save_flags(void);
-extern void kdb_restore_flags(void);
-
 #define KDB_FLAG(flag)		(kdb_flags & KDB_FLAG_##flag)
 #define KDB_FLAG_SET(flag)	((void)(kdb_flags |= KDB_FLAG_##flag))
 #define KDB_FLAG_CLEAR(flag)	((void)(kdb_flags &= ~KDB_FLAG_##flag))
@@ -195,6 +192,8 @@ int kdb_process_cpu(const struct task_struct *p)
 		cpu = 0;
 	return cpu;
 }
+
+extern void kdb_send_sig(struct task_struct *p, int sig);
 
 #ifdef CONFIG_KALLSYMS
 extern const char *kdb_walk_kallsyms(loff_t *pos);

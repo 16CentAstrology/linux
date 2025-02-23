@@ -56,7 +56,6 @@
 #include <scsi/sas_ata.h>
 #include <linux/atomic.h>
 #include <linux/blk-mq.h>
-#include <linux/blk-mq-pci.h>
 #include "pm8001_defs.h"
 
 #define DRV_NAME		"pm80xx"
@@ -71,6 +70,7 @@
 #define PM8001_DEV_LOGGING	0x80 /* development message logging */
 #define PM8001_DEVIO_LOGGING	0x100 /* development io message logging */
 #define PM8001_IOERR_LOGGING	0x200 /* development io err message logging */
+#define PM8001_EVENT_LOGGING	0x400 /* HW event logging */
 
 #define pm8001_info(HBA, fmt, ...)					\
 	pr_info("%s:: %s %d: " fmt,					\
@@ -82,10 +82,7 @@ do {									\
 		pm8001_info(HBA, fmt, ##__VA_ARGS__);			\
 } while (0)
 
-#define PM8001_USE_TASKLET
-#define PM8001_USE_MSIX
-#define PM8001_READ_VPD
-
+extern bool pm8001_use_msix;
 
 #define IS_SPCV_12G(dev)	((dev->device == 0X8074)		\
 				|| (dev->device == 0X8076)		\
@@ -97,6 +94,8 @@ do {									\
 extern struct list_head hba_list;
 extern const struct pm8001_dispatch pm8001_8001_dispatch;
 extern const struct pm8001_dispatch pm8001_80xx_dispatch;
+
+extern uint pcs_event_log_severity;
 
 struct pm8001_hba_info;
 struct pm8001_ccb_info;
@@ -519,14 +518,12 @@ struct pm8001_hba_info {
 	struct pm8001_device	*devices;
 	struct pm8001_ccb_info	*ccb_info;
 	u32			ccb_count;
-#ifdef PM8001_USE_MSIX
+
+	bool			use_msix;
 	int			number_of_intr;/*will be used in remove()*/
 	char			intr_drvname[PM8001_MAX_MSIX_VEC]
 				[PM8001_NAME_LENGTH+1+3+1];
-#endif
-#ifdef PM8001_USE_TASKLET
 	struct tasklet_struct	tasklet[PM8001_MAX_MSIX_VEC];
-#endif
 	u32			logging_level;
 	u32			link_rate;
 	u32			fw_status;
@@ -701,8 +698,6 @@ int pm8001_mpi_fw_flash_update_resp(struct pm8001_hba_info *pm8001_ha,
 							void *piomb);
 int pm8001_mpi_general_event(struct pm8001_hba_info *pm8001_ha, void *piomb);
 int pm8001_mpi_task_abort_resp(struct pm8001_hba_info *pm8001_ha, void *piomb);
-struct sas_task *pm8001_alloc_task(void);
-void pm8001_free_task(struct sas_task *task);
 void pm8001_tag_free(struct pm8001_hba_info *pm8001_ha, u32 tag);
 struct pm8001_device *pm8001_find_dev(struct pm8001_hba_info *pm8001_ha,
 					u32 device_id);
@@ -723,6 +718,7 @@ int pm80xx_fatal_errors(struct pm8001_hba_info *pm8001_ha);
 void pm8001_free_dev(struct pm8001_device *pm8001_dev);
 /* ctl shared API */
 extern const struct attribute_group *pm8001_host_groups[];
+extern const struct attribute_group *pm8001_sdev_groups[];
 
 #define PM8001_INVALID_TAG	((u32)-1)
 
@@ -790,6 +786,8 @@ static inline void pm8001_ccb_task_free_done(struct pm8001_hba_info *pm8001_ha,
 }
 void pm8001_setds_completion(struct domain_device *dev);
 void pm8001_tmf_aborted(struct sas_task *task);
+void pm80xx_show_pending_commands(struct pm8001_hba_info *pm8001_ha,
+				  struct pm8001_device *dev);
 
 #endif
 

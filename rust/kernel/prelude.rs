@@ -11,18 +11,31 @@
 //! use kernel::prelude::*;
 //! ```
 
+#[doc(no_inline)]
 pub use core::pin::Pin;
 
-pub use alloc::{boxed::Box, vec::Vec};
+pub use crate::alloc::{flags::*, Box, KBox, KVBox, KVVec, KVec, VBox, VVec, Vec};
 
-pub use macros::{module, vtable};
+#[doc(no_inline)]
+pub use macros::{module, pin_data, pinned_drop, vtable, Zeroable};
 
-pub use super::build_assert;
+pub use super::{build_assert, build_error};
 
-pub use super::{dbg, pr_alert, pr_crit, pr_debug, pr_emerg, pr_err, pr_info, pr_notice, pr_warn};
+// `super::std_vendor` is hidden, which makes the macro inline for some reason.
+#[doc(no_inline)]
+pub use super::dbg;
+pub use super::fmt;
+pub use super::{dev_alert, dev_crit, dev_dbg, dev_emerg, dev_err, dev_info, dev_notice, dev_warn};
+pub use super::{pr_alert, pr_crit, pr_debug, pr_emerg, pr_err, pr_info, pr_notice, pr_warn};
+
+pub use super::{init, pin_init, try_init, try_pin_init};
 
 pub use super::static_assert;
 
 pub use super::error::{code::*, Error, Result};
 
 pub use super::{str::CStr, ThisModule};
+
+pub use super::init::{InPlaceInit, InPlaceWrite, Init, PinInit};
+
+pub use super::current;

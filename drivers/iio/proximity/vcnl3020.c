@@ -449,7 +449,7 @@ static int vcnl3020_write_event_config(struct iio_dev *indio_dev,
 				       const struct iio_chan_spec *chan,
 				       enum iio_event_type type,
 				       enum iio_event_direction dir,
-				       int state)
+				       bool state)
 {
 	switch (chan->type) {
 	case IIO_PROXIMITY:
@@ -662,7 +662,7 @@ static struct i2c_driver vcnl3020_driver = {
 		.name   = "vcnl3020",
 		.of_match_table = vcnl3020_of_match,
 	},
-	.probe_new  = vcnl3020_probe,
+	.probe      = vcnl3020_probe,
 };
 module_i2c_driver(vcnl3020_driver);
 

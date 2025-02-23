@@ -30,8 +30,9 @@
 #include <linux/ethtool.h>
 #include <linux/io.h>
 #include <linux/can/dev.h>
+#include <linux/platform_device.h>
 #include <linux/spinlock.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
 #include <linux/of_irq.h>
 
 #include <linux/dma-mapping.h>
@@ -1072,9 +1073,10 @@ static int grcan_open(struct net_device *dev)
 	if (err)
 		goto exit_close_candev;
 
+	napi_enable(&priv->napi);
+
 	spin_lock_irqsave(&priv->lock, flags);
 
-	napi_enable(&priv->napi);
 	grcan_start(dev);
 	if (!(priv->can.ctrlmode & CAN_CTRLMODE_LISTENONLY))
 		netif_start_queue(dev);
@@ -1696,7 +1698,7 @@ exit_error:
 	return err;
 }
 
-static int grcan_remove(struct platform_device *ofdev)
+static void grcan_remove(struct platform_device *ofdev)
 {
 	struct net_device *dev = platform_get_drvdata(ofdev);
 	struct grcan_priv *priv = netdev_priv(dev);
@@ -1706,8 +1708,6 @@ static int grcan_remove(struct platform_device *ofdev)
 	irq_dispose_mapping(dev->irq);
 	netif_napi_del(&priv->napi);
 	free_candev(dev);
-
-	return 0;
 }
 
 static const struct of_device_id grcan_match[] = {

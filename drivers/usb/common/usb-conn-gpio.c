@@ -19,6 +19,7 @@
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 #include <linux/regulator/consumer.h>
+#include <linux/string_choices.h>
 #include <linux/usb/role.h>
 
 #define USB_GPIO_DEB_MS		20	/* ms */
@@ -42,6 +43,7 @@ struct usb_conn_info {
 
 	struct power_supply_desc desc;
 	struct power_supply *charger;
+	bool initial_detection;
 };
 
 /*
@@ -86,10 +88,12 @@ static void usb_conn_detect_cable(struct work_struct *work)
 	dev_dbg(info->dev, "role %s -> %s, gpios: id %d, vbus %d\n",
 		usb_role_string(info->last_role), usb_role_string(role), id, vbus);
 
-	if (info->last_role == role) {
+	if (!info->initial_detection && info->last_role == role) {
 		dev_warn(info->dev, "repeated role: %s\n", usb_role_string(role));
 		return;
 	}
+
+	info->initial_detection = false;
 
 	if (info->last_role == USB_ROLE_HOST && info->vbus)
 		regulator_disable(info->vbus);
@@ -108,7 +112,7 @@ static void usb_conn_detect_cable(struct work_struct *work)
 
 	if (info->vbus)
 		dev_dbg(info->dev, "vbus regulator is %s\n",
-			regulator_is_enabled(info->vbus) ? "enabled" : "disabled");
+			str_enabled_disabled(regulator_is_enabled(info->vbus)));
 
 	power_supply_changed(info->charger);
 }
@@ -258,6 +262,7 @@ static int usb_conn_probe(struct platform_device *pdev)
 	device_set_wakeup_capable(&pdev->dev, true);
 
 	/* Perform initial detection */
+	info->initial_detection = true;
 	usb_conn_queue_dwork(info, 0);
 
 	return 0;
@@ -267,7 +272,7 @@ put_role_sw:
 	return ret;
 }
 
-static int usb_conn_remove(struct platform_device *pdev)
+static void usb_conn_remove(struct platform_device *pdev)
 {
 	struct usb_conn_info *info = platform_get_drvdata(pdev);
 
@@ -277,8 +282,6 @@ static int usb_conn_remove(struct platform_device *pdev)
 		regulator_disable(info->vbus);
 
 	usb_role_switch_put(info->role_sw);
-
-	return 0;
 }
 
 static int __maybe_unused usb_conn_suspend(struct device *dev)

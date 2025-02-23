@@ -12,14 +12,16 @@
 #include <linux/of_device.h>
 #include <linux/of_graph.h>
 #include <linux/of_reserved_mem.h>
+#include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/debugfs.h>
 
+#include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_fbdev_generic.h>
+#include <drm/drm_fbdev_dma.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
@@ -561,13 +563,13 @@ static void malidp_debugfs_init(struct drm_minor *minor)
 static const struct drm_driver malidp_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	DRM_GEM_DMA_DRIVER_OPS_WITH_DUMB_CREATE(malidp_dumb_create),
+	DRM_FBDEV_DMA_DRIVER_OPS,
 #ifdef CONFIG_DEBUG_FS
 	.debugfs_init = malidp_debugfs_init,
 #endif
 	.fops = &fops,
 	.name = "mali-dp",
 	.desc = "ARM Mali Display Processor driver",
-	.date = "20160106",
 	.major = 1,
 	.minor = 0,
 };
@@ -649,7 +651,7 @@ static ssize_t core_id_show(struct device *dev, struct device_attribute *attr,
 	struct drm_device *drm = dev_get_drvdata(dev);
 	struct malidp_drm *malidp = drm_to_malidp(drm);
 
-	return snprintf(buf, PAGE_SIZE, "%08x\n", malidp->core_id);
+	return sysfs_emit(buf, "%08x\n", malidp->core_id);
 }
 
 static DEVICE_ATTR_RO(core_id);
@@ -724,8 +726,7 @@ static int malidp_bind(struct device *dev)
 	hwdev->hw = (struct malidp_hw *)of_device_get_match_data(dev);
 	malidp->dev = hwdev;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	hwdev->regs = devm_ioremap_resource(dev, res);
+	hwdev->regs = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(hwdev->regs))
 		return PTR_ERR(hwdev->regs);
 
@@ -852,7 +853,7 @@ static int malidp_bind(struct device *dev)
 	if (ret)
 		goto register_fail;
 
-	drm_fbdev_generic_setup(drm, 32);
+	drm_client_setup(drm, NULL);
 
 	return 0;
 
@@ -936,10 +937,14 @@ static int malidp_platform_probe(struct platform_device *pdev)
 					       match);
 }
 
-static int malidp_platform_remove(struct platform_device *pdev)
+static void malidp_platform_remove(struct platform_device *pdev)
 {
 	component_master_del(&pdev->dev, &malidp_master_ops);
-	return 0;
+}
+
+static void malidp_platform_shutdown(struct platform_device *pdev)
+{
+	drm_atomic_helper_shutdown(platform_get_drvdata(pdev));
 }
 
 static int __maybe_unused malidp_pm_suspend(struct device *dev)
@@ -983,6 +988,7 @@ static const struct dev_pm_ops malidp_pm_ops = {
 static struct platform_driver malidp_platform_driver = {
 	.probe		= malidp_platform_probe,
 	.remove		= malidp_platform_remove,
+	.shutdown	= malidp_platform_shutdown,
 	.driver	= {
 		.name = "mali-dp",
 		.pm = &malidp_pm_ops,

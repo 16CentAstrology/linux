@@ -32,10 +32,6 @@
 #include "microchip-isc-regs.h"
 #include "microchip-isc.h"
 
-static unsigned int debug;
-module_param(debug, int, 0644);
-MODULE_PARM_DESC(debug, "debug level (0-2)");
-
 #define ISC_IS_FORMAT_RAW(mbus_code) \
 	(((mbus_code) & 0xf000) == 0x3000)
 
@@ -114,8 +110,8 @@ static int isc_buffer_prepare(struct vb2_buffer *vb)
 	unsigned long size = isc->fmt.fmt.pix.sizeimage;
 
 	if (vb2_plane_size(vb, 0) < size) {
-		v4l2_err(&isc->v4l2_dev, "buffer too small (%lu < %lu)\n",
-			 vb2_plane_size(vb, 0), size);
+		dev_err(isc->dev, "buffer too small (%lu < %lu)\n",
+			vb2_plane_size(vb, 0), size);
 		return -EINVAL;
 	}
 
@@ -346,15 +342,14 @@ static int isc_start_streaming(struct vb2_queue *vq, unsigned int count)
 	/* Enable stream on the sub device */
 	ret = v4l2_subdev_call(isc->current_subdev->sd, video, s_stream, 1);
 	if (ret && ret != -ENOIOCTLCMD) {
-		v4l2_err(&isc->v4l2_dev, "stream on failed in subdev %d\n",
-			 ret);
+		dev_err(isc->dev, "stream on failed in subdev %d\n", ret);
 		goto err_start_stream;
 	}
 
 	ret = pm_runtime_resume_and_get(isc->dev);
 	if (ret < 0) {
-		v4l2_err(&isc->v4l2_dev, "RPM resume failed in subdev %d\n",
-			 ret);
+		dev_err(isc->dev, "RPM resume failed in subdev %d\n",
+			ret);
 		goto err_pm_get;
 	}
 
@@ -423,8 +418,7 @@ static void isc_stop_streaming(struct vb2_queue *vq)
 
 	/* Wait until the end of the current frame */
 	if (isc->cur_frm && !wait_for_completion_timeout(&isc->comp, 5 * HZ))
-		v4l2_err(&isc->v4l2_dev,
-			 "Timeout waiting for end of the capture\n");
+		dev_err(isc->dev, "Timeout waiting for end of the capture\n");
 
 	mutex_unlock(&isc->awb_mutex);
 
@@ -436,7 +430,7 @@ static void isc_stop_streaming(struct vb2_queue *vq)
 	/* Disable stream on the sub device */
 	ret = v4l2_subdev_call(isc->current_subdev->sd, video, s_stream, 0);
 	if (ret && ret != -ENOIOCTLCMD)
-		v4l2_err(&isc->v4l2_dev, "stream off failed in subdev\n");
+		dev_err(isc->dev, "stream off failed in subdev\n");
 
 	/* Release all active buffers */
 	spin_lock_irqsave(&isc->dma_queue_lock, flags);
@@ -471,8 +465,6 @@ static void isc_buffer_queue(struct vb2_buffer *vb)
 
 static const struct vb2_ops isc_vb2_ops = {
 	.queue_setup		= isc_queue_setup,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 	.buf_prepare		= isc_buffer_prepare,
 	.start_streaming	= isc_start_streaming,
 	.stop_streaming		= isc_stop_streaming,
@@ -484,12 +476,8 @@ static const struct vb2_ops isc_vb2_ops = {
 static int isc_querycap(struct file *file, void *priv,
 			struct v4l2_capability *cap)
 {
-	struct isc_device *isc = video_drvdata(file);
-
 	strscpy(cap->driver, "microchip-isc", sizeof(cap->driver));
 	strscpy(cap->card, "Microchip Image Sensor Controller", sizeof(cap->card));
-	snprintf(cap->bus_info, sizeof(cap->bus_info),
-		 "platform:%s", isc->v4l2_dev.name);
 
 	return 0;
 }
@@ -620,28 +608,28 @@ static int isc_try_validate_formats(struct isc_device *isc)
 		break;
 	default:
 	/* any other different formats are not supported */
-		v4l2_err(&isc->v4l2_dev, "Requested unsupported format.\n");
+		dev_err(isc->dev, "Requested unsupported format.\n");
 		ret = -EINVAL;
 	}
-	v4l2_dbg(1, debug, &isc->v4l2_dev,
-		 "Format validation, requested rgb=%u, yuv=%u, grey=%u, bayer=%u\n",
-		 rgb, yuv, grey, bayer);
+	dev_dbg(isc->dev,
+		"Format validation, requested rgb=%u, yuv=%u, grey=%u, bayer=%u\n",
+		rgb, yuv, grey, bayer);
 
 	if (bayer &&
 	    !ISC_IS_FORMAT_RAW(isc->try_config.sd_format->mbus_code)) {
-		v4l2_err(&isc->v4l2_dev, "Cannot output RAW if we do not receive RAW.\n");
+		dev_err(isc->dev, "Cannot output RAW if we do not receive RAW.\n");
 		return -EINVAL;
 	}
 
 	if (grey && !ISC_IS_FORMAT_RAW(isc->try_config.sd_format->mbus_code) &&
 	    !ISC_IS_FORMAT_GREY(isc->try_config.sd_format->mbus_code)) {
-		v4l2_err(&isc->v4l2_dev, "Cannot output GREY if we do not receive RAW/GREY.\n");
+		dev_err(isc->dev, "Cannot output GREY if we do not receive RAW/GREY.\n");
 		return -EINVAL;
 	}
 
 	if ((rgb || bayer || yuv) &&
 	    ISC_IS_FORMAT_GREY(isc->try_config.sd_format->mbus_code)) {
-		v4l2_err(&isc->v4l2_dev, "Cannot convert GREY to another format.\n");
+		dev_err(isc->dev, "Cannot convert GREY to another format.\n");
 		return -EINVAL;
 	}
 
@@ -861,37 +849,6 @@ static int isc_try_configure_pipeline(struct isc_device *isc)
 	return 0;
 }
 
-static void isc_try_fse(struct isc_device *isc,
-			struct v4l2_subdev_state *sd_state)
-{
-	int ret;
-	struct v4l2_subdev_frame_size_enum fse = {};
-
-	/*
-	 * If we do not know yet which format the subdev is using, we cannot
-	 * do anything.
-	 */
-	if (!isc->config.sd_format)
-		return;
-
-	fse.code = isc->try_config.sd_format->mbus_code;
-	fse.which = V4L2_SUBDEV_FORMAT_TRY;
-
-	ret = v4l2_subdev_call(isc->current_subdev->sd, pad, enum_frame_size,
-			       sd_state, &fse);
-	/*
-	 * Attempt to obtain format size from subdev. If not available,
-	 * just use the maximum ISC can receive.
-	 */
-	if (ret) {
-		sd_state->pads->try_crop.width = isc->max_width;
-		sd_state->pads->try_crop.height = isc->max_height;
-	} else {
-		sd_state->pads->try_crop.width = fse.max_width;
-		sd_state->pads->try_crop.height = fse.max_height;
-	}
-}
-
 static int isc_try_fmt(struct isc_device *isc, struct v4l2_format *f)
 {
 	struct v4l2_pix_format *pixfmt = &f->fmt.pix;
@@ -936,15 +893,18 @@ static int isc_set_fmt(struct isc_device *isc, struct v4l2_format *f)
 	isc->config = isc->try_config;
 	isc->fmt = isc->try_fmt;
 
-	v4l2_dbg(1, debug, &isc->v4l2_dev, "ISC set_fmt to %.4s @%dx%d\n",
-		 (char *)&f->fmt.pix.pixelformat,
-		 f->fmt.pix.width, f->fmt.pix.height);
+	dev_dbg(isc->dev, "ISC set_fmt to %.4s @%dx%d\n",
+		(char *)&f->fmt.pix.pixelformat,
+		f->fmt.pix.width, f->fmt.pix.height);
 
 	return 0;
 }
 
-static int isc_validate(struct isc_device *isc)
+static int isc_link_validate(struct media_link *link)
 {
+	struct video_device *vdev =
+		media_entity_to_video_device(link->sink->entity);
+	struct isc_device *isc = video_get_drvdata(vdev);
 	int ret;
 	int i;
 	struct isc_format *sd_fmt = NULL;
@@ -952,10 +912,6 @@ static int isc_validate(struct isc_device *isc)
 	struct v4l2_subdev_format format = {
 		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
 		.pad = isc->remote_pad,
-	};
-	struct v4l2_subdev_pad_config pad_cfg = {};
-	struct v4l2_subdev_state pad_state = {
-		.pads = &pad_cfg,
 	};
 
 	/* Get current format from subdev */
@@ -973,9 +929,9 @@ static int isc_validate(struct isc_device *isc)
 
 	/* Check if the format is not supported */
 	if (!sd_fmt) {
-		v4l2_err(&isc->v4l2_dev,
-			 "Current subdevice is streaming a media bus code that is not supported 0x%x\n",
-			 format.format.code);
+		dev_err(isc->dev,
+			"Current subdevice is streaming a media bus code that is not supported 0x%x\n",
+			format.format.code);
 		return -EPIPE;
 	}
 
@@ -993,16 +949,16 @@ static int isc_validate(struct isc_device *isc)
 	/* Check if the frame size is the same. Otherwise we may overflow */
 	if (pixfmt->height != format.format.height ||
 	    pixfmt->width != format.format.width) {
-		v4l2_err(&isc->v4l2_dev,
-			 "ISC not configured with the proper frame size: %dx%d\n",
-			 format.format.width, format.format.height);
+		dev_err(isc->dev,
+			"ISC not configured with the proper frame size: %dx%d\n",
+			format.format.width, format.format.height);
 		return -EPIPE;
 	}
 
-	v4l2_dbg(1, debug, &isc->v4l2_dev,
-		 "Identified subdev using format %.4s with %dx%d %d bpp\n",
-		 (char *)&sd_fmt->fourcc, pixfmt->width, pixfmt->height,
-		 isc->try_config.bpp);
+	dev_dbg(isc->dev,
+		"Identified subdev using format %.4s with %dx%d %d bpp\n",
+		(char *)&sd_fmt->fourcc, pixfmt->width, pixfmt->height,
+		isc->try_config.bpp);
 
 	/* Reset and restart AWB if the subdevice changed the format */
 	if (isc->try_config.sd_format && isc->config.sd_format &&
@@ -1017,9 +973,6 @@ static int isc_validate(struct isc_device *isc)
 	if (ret)
 		return ret;
 
-	/* Obtain frame sizes if possible to have crop requirements ready */
-	isc_try_fse(isc, &pad_state);
-
 	/* Configure ISC pipeline for the config */
 	ret = isc_try_configure_pipeline(isc);
 	if (ret)
@@ -1027,7 +980,7 @@ static int isc_validate(struct isc_device *isc)
 
 	isc->config = isc->try_config;
 
-	v4l2_dbg(1, debug, &isc->v4l2_dev, "New ISC configuration in place\n");
+	dev_dbg(isc->dev, "New ISC configuration in place\n");
 
 	return 0;
 }
@@ -1294,9 +1247,8 @@ static void isc_hist_count(struct isc_device *isc, u32 *min, u32 *max)
 	if (!*min)
 		*min = 1;
 
-	v4l2_dbg(1, debug, &isc->v4l2_dev,
-		 "isc wb: hist_id %u, hist_count %u",
-		 ctrls->hist_id, *hist_count);
+	dev_dbg(isc->dev, "isc wb: hist_id %u, hist_count %u",
+		ctrls->hist_id, *hist_count);
 }
 
 static void isc_wb_update(struct isc_ctrls *ctrls)
@@ -1318,8 +1270,7 @@ static void isc_wb_update(struct isc_ctrls *ctrls)
 		(u64)hist_count[ISC_HIS_CFG_MODE_GB];
 	avg >>= 1;
 
-	v4l2_dbg(1, debug, &isc->v4l2_dev,
-		 "isc wb: green components average %llu\n", avg);
+	dev_dbg(isc->dev, "isc wb: green components average %llu\n", avg);
 
 	/* Green histogram is null, nothing to do */
 	if (!avg)
@@ -1373,9 +1324,9 @@ static void isc_wb_update(struct isc_ctrls *ctrls)
 		else
 			gw_gain[c] = 1 << 9;
 
-		v4l2_dbg(1, debug, &isc->v4l2_dev,
-			 "isc wb: component %d, s_gain %u, gw_gain %u\n",
-			 c, s_gain[c], gw_gain[c]);
+		dev_dbg(isc->dev,
+			"isc wb: component %d, s_gain %u, gw_gain %u\n",
+			c, s_gain[c], gw_gain[c]);
 		/* multiply both gains and adjust for decimals */
 		ctrls->gain[c] = s_gain[c] * gw_gain[c];
 		ctrls->gain[c] >>= 9;
@@ -1383,9 +1334,8 @@ static void isc_wb_update(struct isc_ctrls *ctrls)
 		/* make sure we are not out of range */
 		ctrls->gain[c] = clamp_val(ctrls->gain[c], 0, GENMASK(12, 0));
 
-		v4l2_dbg(1, debug, &isc->v4l2_dev,
-			 "isc wb: component %d, final gain %u\n",
-			 c, ctrls->gain[c]);
+		dev_dbg(isc->dev, "isc wb: component %d, final gain %u\n",
+			c, ctrls->gain[c]);
 	}
 }
 
@@ -1406,8 +1356,8 @@ static void isc_awb_work(struct work_struct *w)
 
 	isc_hist_count(isc, &min, &max);
 
-	v4l2_dbg(1, debug, &isc->v4l2_dev,
-		 "isc wb mode %d: hist min %u , max %u\n", hist_id, min, max);
+	dev_dbg(isc->dev,
+		"isc wb mode %d: hist min %u , max %u\n", hist_id, min, max);
 
 	ctrls->hist_minmax[hist_id][HIST_MIN_INDEX] = min;
 	ctrls->hist_minmax[hist_id][HIST_MAX_INDEX] = max;
@@ -1446,8 +1396,8 @@ static void isc_awb_work(struct work_struct *w)
 		 * we are basically done.
 		 */
 		if (ctrls->awb == ISC_WB_ONETIME) {
-			v4l2_info(&isc->v4l2_dev,
-				  "Completed one time white-balance adjustment.\n");
+			dev_info(isc->dev,
+				 "Completed one time white-balance adjustment.\n");
 			/* update the v4l2 controls values */
 			isc_update_v4l2_ctrls(isc);
 			ctrls->awb = ISC_WB_NONE;
@@ -1580,8 +1530,7 @@ static int isc_s_awb_ctrl(struct v4l2_ctrl *ctrl)
 		    V4L2_CTRL_FLAG_INACTIVE)) {
 			ctrls->awb = ISC_WB_ONETIME;
 			isc_set_histogram(isc, true);
-			v4l2_dbg(1, debug, &isc->v4l2_dev,
-				 "One time white-balance started.\n");
+			dev_dbg(isc->dev, "One time white-balance started.\n");
 		}
 		return 0;
 	}
@@ -1721,7 +1670,7 @@ static int isc_ctrl_init(struct isc_device *isc)
 
 static int isc_async_bound(struct v4l2_async_notifier *notifier,
 			   struct v4l2_subdev *subdev,
-			   struct v4l2_async_subdev *asd)
+			   struct v4l2_async_connection *asd)
 {
 	struct isc_device *isc = container_of(notifier->v4l2_dev,
 					      struct isc_device, v4l2_dev);
@@ -1730,7 +1679,7 @@ static int isc_async_bound(struct v4l2_async_notifier *notifier,
 	int pad;
 
 	if (video_is_registered(&isc->video_dev)) {
-		v4l2_err(&isc->v4l2_dev, "only supports one sub-device.\n");
+		dev_err(isc->dev, "only supports one sub-device.\n");
 		return -EBUSY;
 	}
 
@@ -1739,8 +1688,7 @@ static int isc_async_bound(struct v4l2_async_notifier *notifier,
 	pad = media_entity_get_fwnode_pad(&subdev->entity, asd->match.fwnode,
 					  MEDIA_PAD_FL_SOURCE);
 	if (pad < 0) {
-		v4l2_err(&isc->v4l2_dev, "failed to find pad for %s\n",
-			 subdev->name);
+		dev_err(isc->dev, "failed to find pad for %s\n", subdev->name);
 		return pad;
 	}
 
@@ -1751,7 +1699,7 @@ static int isc_async_bound(struct v4l2_async_notifier *notifier,
 
 static void isc_async_unbind(struct v4l2_async_notifier *notifier,
 			     struct v4l2_subdev *subdev,
-			     struct v4l2_async_subdev *asd)
+			     struct v4l2_async_connection *asd)
 {
 	struct isc_device *isc = container_of(notifier->v4l2_dev,
 					      struct isc_device, v4l2_dev);
@@ -1813,7 +1761,7 @@ static int isc_async_complete(struct v4l2_async_notifier *notifier)
 
 	ret = v4l2_device_register_subdev_nodes(&isc->v4l2_dev);
 	if (ret < 0) {
-		v4l2_err(&isc->v4l2_dev, "Failed to register subdev nodes\n");
+		dev_err(isc->dev, "Failed to register subdev nodes\n");
 		return ret;
 	}
 
@@ -1833,13 +1781,12 @@ static int isc_async_complete(struct v4l2_async_notifier *notifier)
 	q->mem_ops		= &vb2_dma_contig_memops;
 	q->timestamp_flags	= V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
 	q->lock			= &isc->lock;
-	q->min_buffers_needed	= 1;
+	q->min_queued_buffers	= 1;
 	q->dev			= isc->dev;
 
 	ret = vb2_queue_init(q);
 	if (ret < 0) {
-		v4l2_err(&isc->v4l2_dev,
-			 "vb2_queue_init() failed: %d\n", ret);
+		dev_err(isc->dev, "vb2_queue_init() failed: %d\n", ret);
 		goto isc_async_complete_err;
 	}
 
@@ -1850,13 +1797,13 @@ static int isc_async_complete(struct v4l2_async_notifier *notifier)
 
 	ret = isc_set_default_fmt(isc);
 	if (ret) {
-		v4l2_err(&isc->v4l2_dev, "Could not set default format\n");
+		dev_err(isc->dev, "Could not set default format\n");
 		goto isc_async_complete_err;
 	}
 
 	ret = isc_ctrl_init(isc);
 	if (ret) {
-		v4l2_err(&isc->v4l2_dev, "Init isc ctrols failed: %d\n", ret);
+		dev_err(isc->dev, "Init isc ctrols failed: %d\n", ret);
 		goto isc_async_complete_err;
 	}
 
@@ -1876,8 +1823,7 @@ static int isc_async_complete(struct v4l2_async_notifier *notifier)
 
 	ret = video_register_device(vdev, VFL_TYPE_VIDEO, -1);
 	if (ret < 0) {
-		v4l2_err(&isc->v4l2_dev,
-			 "video_register_device failed: %d\n", ret);
+		dev_err(isc->dev, "video_register_device failed: %d\n", ret);
 		goto isc_async_complete_err;
 	}
 
@@ -1961,20 +1907,6 @@ int microchip_isc_pipeline_init(struct isc_device *isc)
 }
 EXPORT_SYMBOL_GPL(microchip_isc_pipeline_init);
 
-static int isc_link_validate(struct media_link *link)
-{
-	struct video_device *vdev =
-		media_entity_to_video_device(link->sink->entity);
-	struct isc_device *isc = video_get_drvdata(vdev);
-	int ret;
-
-	ret = v4l2_subdev_link_validate(link);
-	if (ret)
-		return ret;
-
-	return isc_validate(isc);
-}
-
 static const struct media_entity_operations isc_entity_operations = {
 	.link_validate = isc_link_validate,
 };
@@ -2005,8 +1937,6 @@ int isc_mc_init(struct isc_device *isc, u32 ver)
 	strscpy(isc->mdev.driver_name, KBUILD_MODNAME,
 		sizeof(isc->mdev.driver_name));
 	strscpy(isc->mdev.model, match->compatible, sizeof(isc->mdev.model));
-	snprintf(isc->mdev.bus_info, sizeof(isc->mdev.bus_info), "platform:%s",
-		 isc->v4l2_dev.name);
 	isc->mdev.hw_revision = ver;
 
 	media_device_init(&isc->mdev);

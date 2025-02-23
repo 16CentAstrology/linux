@@ -4,20 +4,31 @@
 #ifndef __IOMMUFD_PRIVATE_H
 #define __IOMMUFD_PRIVATE_H
 
+#include <linux/iommu.h>
+#include <linux/iommufd.h>
+#include <linux/iova_bitmap.h>
 #include <linux/rwsem.h>
-#include <linux/xarray.h>
-#include <linux/refcount.h>
 #include <linux/uaccess.h>
+#include <linux/xarray.h>
+#include <uapi/linux/iommufd.h>
+
+#include "../iommu-priv.h"
 
 struct iommu_domain;
 struct iommu_group;
 struct iommu_option;
+struct iommufd_device;
 
 struct iommufd_ctx {
 	struct file *file;
 	struct xarray objects;
+	struct xarray groups;
+	wait_queue_head_t destroy_wait;
+	struct rw_semaphore ioas_creation_lock;
 
 	u8 account_mode;
+	/* Compatibility with VFIO no iommu */
+	u8 no_iommu_mode;
 	struct iommufd_ioas *vfio_ioas;
 };
 
@@ -59,6 +70,10 @@ int iopt_map_user_pages(struct iommufd_ctx *ictx, struct io_pagetable *iopt,
 			unsigned long *iova, void __user *uptr,
 			unsigned long length, int iommu_prot,
 			unsigned int flags);
+int iopt_map_file_pages(struct iommufd_ctx *ictx, struct io_pagetable *iopt,
+			unsigned long *iova, struct file *file,
+			unsigned long start, unsigned long length,
+			int iommu_prot, unsigned int flags);
 int iopt_map_pages(struct io_pagetable *iopt, struct list_head *pages_list,
 		   unsigned long length, unsigned long *dst_iova,
 		   int iommu_prot, unsigned int flags);
@@ -66,16 +81,22 @@ int iopt_unmap_iova(struct io_pagetable *iopt, unsigned long iova,
 		    unsigned long length, unsigned long *unmapped);
 int iopt_unmap_all(struct io_pagetable *iopt, unsigned long *unmapped);
 
+int iopt_read_and_clear_dirty_data(struct io_pagetable *iopt,
+				   struct iommu_domain *domain,
+				   unsigned long flags,
+				   struct iommu_hwpt_get_dirty_bitmap *bitmap);
+int iopt_set_dirty_tracking(struct io_pagetable *iopt,
+			    struct iommu_domain *domain, bool enable);
+
 void iommufd_access_notify_unmap(struct io_pagetable *iopt, unsigned long iova,
 				 unsigned long length);
 int iopt_table_add_domain(struct io_pagetable *iopt,
 			  struct iommu_domain *domain);
 void iopt_table_remove_domain(struct io_pagetable *iopt,
 			      struct iommu_domain *domain);
-int iopt_table_enforce_group_resv_regions(struct io_pagetable *iopt,
-					  struct device *device,
-					  struct iommu_group *group,
-					  phys_addr_t *sw_msi_start);
+int iopt_table_enforce_dev_resv_regions(struct io_pagetable *iopt,
+					struct device *dev,
+					phys_addr_t *sw_msi_start);
 int iopt_set_allow_iova(struct io_pagetable *iopt,
 			struct rb_root_cached *allowed_iova);
 int iopt_reserve_iova(struct io_pagetable *iopt, unsigned long start,
@@ -106,32 +127,17 @@ static inline int iommufd_ucmd_respond(struct iommufd_ucmd *ucmd,
 	return 0;
 }
 
-enum iommufd_object_type {
-	IOMMUFD_OBJ_NONE,
-	IOMMUFD_OBJ_ANY = IOMMUFD_OBJ_NONE,
-	IOMMUFD_OBJ_DEVICE,
-	IOMMUFD_OBJ_HW_PAGETABLE,
-	IOMMUFD_OBJ_IOAS,
-	IOMMUFD_OBJ_ACCESS,
-#ifdef CONFIG_IOMMUFD_TEST
-	IOMMUFD_OBJ_SELFTEST,
-#endif
-};
-
-/* Base struct for all objects with a userspace ID handle. */
-struct iommufd_object {
-	struct rw_semaphore destroy_rwsem;
-	refcount_t users;
-	enum iommufd_object_type type;
-	unsigned int id;
-};
-
 static inline bool iommufd_lock_obj(struct iommufd_object *obj)
 {
-	if (!down_read_trylock(&obj->destroy_rwsem))
+	if (!refcount_inc_not_zero(&obj->users))
 		return false;
-	if (!refcount_inc_not_zero(&obj->users)) {
-		up_read(&obj->destroy_rwsem);
+	if (!refcount_inc_not_zero(&obj->shortterm_users)) {
+		/*
+		 * If the caller doesn't already have a ref on obj this must be
+		 * called under the xa_lock. Otherwise the caller is holding a
+		 * ref on users. Thus it cannot be one before this decrement.
+		 */
+		refcount_dec(&obj->users);
 		return false;
 	}
 	return true;
@@ -139,47 +145,69 @@ static inline bool iommufd_lock_obj(struct iommufd_object *obj)
 
 struct iommufd_object *iommufd_get_object(struct iommufd_ctx *ictx, u32 id,
 					  enum iommufd_object_type type);
-static inline void iommufd_put_object(struct iommufd_object *obj)
+static inline void iommufd_put_object(struct iommufd_ctx *ictx,
+				      struct iommufd_object *obj)
 {
+	/*
+	 * Users first, then shortterm so that REMOVE_WAIT_SHORTTERM never sees
+	 * a spurious !0 users with a 0 shortterm_users.
+	 */
 	refcount_dec(&obj->users);
-	up_read(&obj->destroy_rwsem);
+	if (refcount_dec_and_test(&obj->shortterm_users))
+		wake_up_interruptible_all(&ictx->destroy_wait);
 }
 
-/**
- * iommufd_ref_to_users() - Switch from destroy_rwsem to users refcount
- *        protection
- * @obj - Object to release
- *
- * Objects have two refcount protections (destroy_rwsem and the refcount_t
- * users). Holding either of these will prevent the object from being destroyed.
- *
- * Depending on the use case, one protection or the other is appropriate.  In
- * most cases references are being protected by the destroy_rwsem. This allows
- * orderly destruction of the object because iommufd_object_destroy_user() will
- * wait for it to become unlocked. However, as a rwsem, it cannot be held across
- * a system call return. So cases that have longer term needs must switch
- * to the weaker users refcount_t.
- *
- * With users protection iommufd_object_destroy_user() will return false,
- * refusing to destroy the object, causing -EBUSY to userspace.
- */
-static inline void iommufd_ref_to_users(struct iommufd_object *obj)
-{
-	up_read(&obj->destroy_rwsem);
-	/* iommufd_lock_obj() obtains users as well */
-}
 void iommufd_object_abort(struct iommufd_ctx *ictx, struct iommufd_object *obj);
 void iommufd_object_abort_and_destroy(struct iommufd_ctx *ictx,
 				      struct iommufd_object *obj);
 void iommufd_object_finalize(struct iommufd_ctx *ictx,
 			     struct iommufd_object *obj);
-bool iommufd_object_destroy_user(struct iommufd_ctx *ictx,
-				 struct iommufd_object *obj);
-struct iommufd_object *_iommufd_object_alloc(struct iommufd_ctx *ictx,
-					     size_t size,
-					     enum iommufd_object_type type);
 
-#define iommufd_object_alloc(ictx, ptr, type)                                  \
+enum {
+	REMOVE_WAIT_SHORTTERM = 1,
+};
+int iommufd_object_remove(struct iommufd_ctx *ictx,
+			  struct iommufd_object *to_destroy, u32 id,
+			  unsigned int flags);
+
+/*
+ * The caller holds a users refcount and wants to destroy the object. At this
+ * point the caller has no shortterm_users reference and at least the xarray
+ * will be holding one.
+ */
+static inline void iommufd_object_destroy_user(struct iommufd_ctx *ictx,
+					       struct iommufd_object *obj)
+{
+	int ret;
+
+	ret = iommufd_object_remove(ictx, obj, obj->id, REMOVE_WAIT_SHORTTERM);
+
+	/*
+	 * If there is a bug and we couldn't destroy the object then we did put
+	 * back the caller's users refcount and will eventually try to free it
+	 * again during close.
+	 */
+	WARN_ON(ret);
+}
+
+/*
+ * The HWPT allocated by autodomains is used in possibly many devices and
+ * is automatically destroyed when its refcount reaches zero.
+ *
+ * If userspace uses the HWPT manually, even for a short term, then it will
+ * disrupt this refcounting and the auto-free in the kernel will not work.
+ * Userspace that tries to use the automatically allocated HWPT must be careful
+ * to ensure that it is consistently destroyed, eg by not racing accesses
+ * and by not attaching an automatic HWPT to a device manually.
+ */
+static inline void
+iommufd_object_put_and_try_destroy(struct iommufd_ctx *ictx,
+				   struct iommufd_object *obj)
+{
+	iommufd_object_remove(ictx, obj, obj->id, 0);
+}
+
+#define __iommufd_object_alloc(ictx, ptr, type, obj)                           \
 	container_of(_iommufd_object_alloc(                                    \
 			     ictx,                                             \
 			     sizeof(*(ptr)) + BUILD_BUG_ON_ZERO(               \
@@ -187,6 +215,9 @@ struct iommufd_object *_iommufd_object_alloc(struct iommufd_ctx *ictx,
 							       obj) != 0),     \
 			     type),                                            \
 		     typeof(*(ptr)), obj)
+
+#define iommufd_object_alloc(ictx, ptr, type) \
+	__iommufd_object_alloc(ictx, ptr, type, obj)
 
 /*
  * The IO Address Space (IOAS) pagetable is a virtual page table backed by the
@@ -209,10 +240,10 @@ struct iommufd_ioas {
 	struct list_head hwpt_list;
 };
 
-static inline struct iommufd_ioas *iommufd_get_ioas(struct iommufd_ucmd *ucmd,
+static inline struct iommufd_ioas *iommufd_get_ioas(struct iommufd_ctx *ictx,
 						    u32 id)
 {
-	return container_of(iommufd_get_object(ucmd->ictx, id,
+	return container_of(iommufd_get_object(ictx, id,
 					       IOMMUFD_OBJ_IOAS),
 			    struct iommufd_ioas, obj);
 }
@@ -223,6 +254,8 @@ void iommufd_ioas_destroy(struct iommufd_object *obj);
 int iommufd_ioas_iova_ranges(struct iommufd_ucmd *ucmd);
 int iommufd_ioas_allow_iovas(struct iommufd_ucmd *ucmd);
 int iommufd_ioas_map(struct iommufd_ucmd *ucmd);
+int iommufd_ioas_map_file(struct iommufd_ucmd *ucmd);
+int iommufd_ioas_change_process(struct iommufd_ucmd *ucmd);
 int iommufd_ioas_copy(struct iommufd_ucmd *ucmd);
 int iommufd_ioas_unmap(struct iommufd_ucmd *ucmd);
 int iommufd_ioas_option(struct iommufd_ucmd *ucmd);
@@ -230,6 +263,8 @@ int iommufd_option_rlimit_mode(struct iommu_option *cmd,
 			       struct iommufd_ctx *ictx);
 
 int iommufd_vfio_ioas(struct iommufd_ucmd *ucmd);
+int iommufd_check_iova_range(struct io_pagetable *iopt,
+			     struct iommu_hwpt_get_dirty_bitmap *bitmap);
 
 /*
  * A HW pagetable is called an iommu_domain inside the kernel. This user object
@@ -239,28 +274,153 @@ int iommufd_vfio_ioas(struct iommufd_ucmd *ucmd);
  */
 struct iommufd_hw_pagetable {
 	struct iommufd_object obj;
-	struct iommufd_ioas *ioas;
 	struct iommu_domain *domain;
+	struct iommufd_fault *fault;
+};
+
+struct iommufd_hwpt_paging {
+	struct iommufd_hw_pagetable common;
+	struct iommufd_ioas *ioas;
 	bool auto_domain : 1;
 	bool enforce_cache_coherency : 1;
 	bool msi_cookie : 1;
+	bool nest_parent : 1;
 	/* Head at iommufd_ioas::hwpt_list */
 	struct list_head hwpt_item;
-	struct mutex devices_lock;
-	struct list_head devices;
 };
 
+struct iommufd_hwpt_nested {
+	struct iommufd_hw_pagetable common;
+	struct iommufd_hwpt_paging *parent;
+	struct iommufd_viommu *viommu;
+};
+
+static inline bool hwpt_is_paging(struct iommufd_hw_pagetable *hwpt)
+{
+	return hwpt->obj.type == IOMMUFD_OBJ_HWPT_PAGING;
+}
+
+static inline struct iommufd_hwpt_paging *
+to_hwpt_paging(struct iommufd_hw_pagetable *hwpt)
+{
+	return container_of(hwpt, struct iommufd_hwpt_paging, common);
+}
+
+static inline struct iommufd_hwpt_nested *
+to_hwpt_nested(struct iommufd_hw_pagetable *hwpt)
+{
+	return container_of(hwpt, struct iommufd_hwpt_nested, common);
+}
+
+static inline struct iommufd_hwpt_paging *
+find_hwpt_paging(struct iommufd_hw_pagetable *hwpt)
+{
+	switch (hwpt->obj.type) {
+	case IOMMUFD_OBJ_HWPT_PAGING:
+		return to_hwpt_paging(hwpt);
+	case IOMMUFD_OBJ_HWPT_NESTED:
+		return to_hwpt_nested(hwpt)->parent;
+	default:
+		return NULL;
+	}
+}
+
+static inline struct iommufd_hwpt_paging *
+iommufd_get_hwpt_paging(struct iommufd_ucmd *ucmd, u32 id)
+{
+	return container_of(iommufd_get_object(ucmd->ictx, id,
+					       IOMMUFD_OBJ_HWPT_PAGING),
+			    struct iommufd_hwpt_paging, common.obj);
+}
+
+static inline struct iommufd_hw_pagetable *
+iommufd_get_hwpt_nested(struct iommufd_ucmd *ucmd, u32 id)
+{
+	return container_of(iommufd_get_object(ucmd->ictx, id,
+					       IOMMUFD_OBJ_HWPT_NESTED),
+			    struct iommufd_hw_pagetable, obj);
+}
+
+int iommufd_hwpt_set_dirty_tracking(struct iommufd_ucmd *ucmd);
+int iommufd_hwpt_get_dirty_bitmap(struct iommufd_ucmd *ucmd);
+
+struct iommufd_hwpt_paging *
+iommufd_hwpt_paging_alloc(struct iommufd_ctx *ictx, struct iommufd_ioas *ioas,
+			  struct iommufd_device *idev, u32 flags,
+			  bool immediate_attach,
+			  const struct iommu_user_data *user_data);
+int iommufd_hw_pagetable_attach(struct iommufd_hw_pagetable *hwpt,
+				struct iommufd_device *idev);
 struct iommufd_hw_pagetable *
-iommufd_hw_pagetable_alloc(struct iommufd_ctx *ictx, struct iommufd_ioas *ioas,
-			   struct device *dev);
-void iommufd_hw_pagetable_destroy(struct iommufd_object *obj);
+iommufd_hw_pagetable_detach(struct iommufd_device *idev);
+void iommufd_hwpt_paging_destroy(struct iommufd_object *obj);
+void iommufd_hwpt_paging_abort(struct iommufd_object *obj);
+void iommufd_hwpt_nested_destroy(struct iommufd_object *obj);
+void iommufd_hwpt_nested_abort(struct iommufd_object *obj);
+int iommufd_hwpt_alloc(struct iommufd_ucmd *ucmd);
+int iommufd_hwpt_invalidate(struct iommufd_ucmd *ucmd);
+
+static inline void iommufd_hw_pagetable_put(struct iommufd_ctx *ictx,
+					    struct iommufd_hw_pagetable *hwpt)
+{
+	if (hwpt->obj.type == IOMMUFD_OBJ_HWPT_PAGING) {
+		struct iommufd_hwpt_paging *hwpt_paging = to_hwpt_paging(hwpt);
+
+		lockdep_assert_not_held(&hwpt_paging->ioas->mutex);
+
+		if (hwpt_paging->auto_domain) {
+			iommufd_object_put_and_try_destroy(ictx, &hwpt->obj);
+			return;
+		}
+	}
+	refcount_dec(&hwpt->obj.users);
+}
+
+struct iommufd_group {
+	struct kref ref;
+	struct mutex lock;
+	struct iommufd_ctx *ictx;
+	struct iommu_group *group;
+	struct iommufd_hw_pagetable *hwpt;
+	struct list_head device_list;
+	phys_addr_t sw_msi_start;
+};
+
+/*
+ * A iommufd_device object represents the binding relationship between a
+ * consuming driver and the iommufd. These objects are created/destroyed by
+ * external drivers, not by userspace.
+ */
+struct iommufd_device {
+	struct iommufd_object obj;
+	struct iommufd_ctx *ictx;
+	struct iommufd_group *igroup;
+	struct list_head group_item;
+	/* always the physical device */
+	struct device *dev;
+	bool enforce_cache_coherency;
+	/* protect iopf_enabled counter */
+	struct mutex iopf_lock;
+	unsigned int iopf_enabled;
+};
+
+static inline struct iommufd_device *
+iommufd_get_device(struct iommufd_ucmd *ucmd, u32 id)
+{
+	return container_of(iommufd_get_object(ucmd->ictx, id,
+					       IOMMUFD_OBJ_DEVICE),
+			    struct iommufd_device, obj);
+}
 
 void iommufd_device_destroy(struct iommufd_object *obj);
+int iommufd_get_hw_info(struct iommufd_ucmd *ucmd);
 
 struct iommufd_access {
 	struct iommufd_object obj;
 	struct iommufd_ctx *ictx;
 	struct iommufd_ioas *ioas;
+	struct iommufd_ioas *ioas_unpin;
+	struct mutex ioas_lock;
 	const struct iommufd_access_ops *ops;
 	void *data;
 	unsigned long iova_alignment;
@@ -269,24 +429,142 @@ struct iommufd_access {
 
 int iopt_add_access(struct io_pagetable *iopt, struct iommufd_access *access);
 void iopt_remove_access(struct io_pagetable *iopt,
-			struct iommufd_access *access);
+			struct iommufd_access *access,
+			u32 iopt_access_list_id);
 void iommufd_access_destroy_object(struct iommufd_object *obj);
 
+/*
+ * An iommufd_fault object represents an interface to deliver I/O page faults
+ * to the user space. These objects are created/destroyed by the user space and
+ * associated with hardware page table objects during page-table allocation.
+ */
+struct iommufd_fault {
+	struct iommufd_object obj;
+	struct iommufd_ctx *ictx;
+	struct file *filep;
+
+	spinlock_t lock; /* protects the deliver list */
+	struct list_head deliver;
+	struct mutex mutex; /* serializes response flows */
+	struct xarray response;
+
+	struct wait_queue_head wait_queue;
+};
+
+/* Fetch the first node out of the fault->deliver list */
+static inline struct iopf_group *
+iommufd_fault_deliver_fetch(struct iommufd_fault *fault)
+{
+	struct list_head *list = &fault->deliver;
+	struct iopf_group *group = NULL;
+
+	spin_lock(&fault->lock);
+	if (!list_empty(list)) {
+		group = list_first_entry(list, struct iopf_group, node);
+		list_del(&group->node);
+	}
+	spin_unlock(&fault->lock);
+	return group;
+}
+
+/* Restore a node back to the head of the fault->deliver list */
+static inline void iommufd_fault_deliver_restore(struct iommufd_fault *fault,
+						 struct iopf_group *group)
+{
+	spin_lock(&fault->lock);
+	list_add(&group->node, &fault->deliver);
+	spin_unlock(&fault->lock);
+}
+
+struct iommufd_attach_handle {
+	struct iommu_attach_handle handle;
+	struct iommufd_device *idev;
+};
+
+/* Convert an iommu attach handle to iommufd handle. */
+#define to_iommufd_handle(hdl)	container_of(hdl, struct iommufd_attach_handle, handle)
+
+static inline struct iommufd_fault *
+iommufd_get_fault(struct iommufd_ucmd *ucmd, u32 id)
+{
+	return container_of(iommufd_get_object(ucmd->ictx, id,
+					       IOMMUFD_OBJ_FAULT),
+			    struct iommufd_fault, obj);
+}
+
+int iommufd_fault_alloc(struct iommufd_ucmd *ucmd);
+void iommufd_fault_destroy(struct iommufd_object *obj);
+int iommufd_fault_iopf_handler(struct iopf_group *group);
+
+int iommufd_fault_domain_attach_dev(struct iommufd_hw_pagetable *hwpt,
+				    struct iommufd_device *idev);
+void iommufd_fault_domain_detach_dev(struct iommufd_hw_pagetable *hwpt,
+				     struct iommufd_device *idev);
+int iommufd_fault_domain_replace_dev(struct iommufd_device *idev,
+				     struct iommufd_hw_pagetable *hwpt,
+				     struct iommufd_hw_pagetable *old);
+
+static inline int iommufd_hwpt_attach_device(struct iommufd_hw_pagetable *hwpt,
+					     struct iommufd_device *idev)
+{
+	if (hwpt->fault)
+		return iommufd_fault_domain_attach_dev(hwpt, idev);
+
+	return iommu_attach_group(hwpt->domain, idev->igroup->group);
+}
+
+static inline void iommufd_hwpt_detach_device(struct iommufd_hw_pagetable *hwpt,
+					      struct iommufd_device *idev)
+{
+	if (hwpt->fault) {
+		iommufd_fault_domain_detach_dev(hwpt, idev);
+		return;
+	}
+
+	iommu_detach_group(hwpt->domain, idev->igroup->group);
+}
+
+static inline int iommufd_hwpt_replace_device(struct iommufd_device *idev,
+					      struct iommufd_hw_pagetable *hwpt,
+					      struct iommufd_hw_pagetable *old)
+{
+	if (old->fault || hwpt->fault)
+		return iommufd_fault_domain_replace_dev(idev, hwpt, old);
+
+	return iommu_group_replace_domain(idev->igroup->group, hwpt->domain);
+}
+
+static inline struct iommufd_viommu *
+iommufd_get_viommu(struct iommufd_ucmd *ucmd, u32 id)
+{
+	return container_of(iommufd_get_object(ucmd->ictx, id,
+					       IOMMUFD_OBJ_VIOMMU),
+			    struct iommufd_viommu, obj);
+}
+
+int iommufd_viommu_alloc_ioctl(struct iommufd_ucmd *ucmd);
+void iommufd_viommu_destroy(struct iommufd_object *obj);
+int iommufd_vdevice_alloc_ioctl(struct iommufd_ucmd *ucmd);
+void iommufd_vdevice_destroy(struct iommufd_object *obj);
+
+struct iommufd_vdevice {
+	struct iommufd_object obj;
+	struct iommufd_ctx *ictx;
+	struct iommufd_viommu *viommu;
+	struct device *dev;
+	u64 id; /* per-vIOMMU virtual ID */
+};
+
 #ifdef CONFIG_IOMMUFD_TEST
-struct iommufd_hw_pagetable *
-iommufd_device_selftest_attach(struct iommufd_ctx *ictx,
-			       struct iommufd_ioas *ioas,
-			       struct device *mock_dev);
-void iommufd_device_selftest_detach(struct iommufd_ctx *ictx,
-				    struct iommufd_hw_pagetable *hwpt);
 int iommufd_test(struct iommufd_ucmd *ucmd);
 void iommufd_selftest_destroy(struct iommufd_object *obj);
 extern size_t iommufd_test_memory_limit;
 void iommufd_test_syz_conv_iova_id(struct iommufd_ucmd *ucmd,
 				   unsigned int ioas_id, u64 *iova, u32 *flags);
 bool iommufd_should_fail(void);
-void __init iommufd_test_init(void);
+int __init iommufd_test_init(void);
 void iommufd_test_exit(void);
+bool iommufd_selftest_is_mock_dev(struct device *dev);
 #else
 static inline void iommufd_test_syz_conv_iova_id(struct iommufd_ucmd *ucmd,
 						 unsigned int ioas_id,
@@ -297,11 +575,16 @@ static inline bool iommufd_should_fail(void)
 {
 	return false;
 }
-static inline void __init iommufd_test_init(void)
+static inline int __init iommufd_test_init(void)
 {
+	return 0;
 }
 static inline void iommufd_test_exit(void)
 {
+}
+static inline bool iommufd_selftest_is_mock_dev(struct device *dev)
+{
+	return false;
 }
 #endif
 #endif

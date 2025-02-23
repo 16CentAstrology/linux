@@ -20,7 +20,7 @@
 #include <linux/types.h>
 #include <linux/watchdog.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #define ZIIRAVE_TIMEOUT_MIN	3
 #define ZIIRAVE_TIMEOUT_MAX	255
@@ -593,8 +593,7 @@ static int ziirave_wdt_init_duration(struct i2c_client *client)
 					 reset_duration);
 }
 
-static int ziirave_wdt_probe(struct i2c_client *client,
-			     const struct i2c_device_id *id)
+static int ziirave_wdt_probe(struct i2c_client *client)
 {
 	int ret;
 	struct ziirave_wdt_data *w_priv;
@@ -716,7 +715,7 @@ static void ziirave_wdt_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id ziirave_wdt_id[] = {
-	{ "rave-wdt", 0 },
+	{ "rave-wdt" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, ziirave_wdt_id);

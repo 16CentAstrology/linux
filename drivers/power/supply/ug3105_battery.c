@@ -287,7 +287,6 @@ out:
 static enum power_supply_property ug3105_battery_props[] = {
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_PRESENT,
-	POWER_SUPPLY_PROP_TECHNOLOGY,
 	POWER_SUPPLY_PROP_SCOPE,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_VOLTAGE_OCV,
@@ -315,9 +314,6 @@ static int ug3105_get_property(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_PRESENT:
 		val->intval = 1;
-		break;
-	case POWER_SUPPLY_PROP_TECHNOLOGY:
-		val->intval = chip->info->technology;
 		break;
 	case POWER_SUPPLY_PROP_SCOPE:
 		val->intval = POWER_SUPPLY_SCOPE_SYSTEM;
@@ -476,7 +472,7 @@ static struct i2c_driver ug3105_i2c_driver = {
 		.name = "ug3105",
 		.pm = &ug3105_pm_ops,
 	},
-	.probe_new = ug3105_probe,
+	.probe = ug3105_probe,
 	.id_table = ug3105_id,
 };
 module_i2c_driver(ug3105_i2c_driver);

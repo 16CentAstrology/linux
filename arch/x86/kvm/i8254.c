@@ -30,7 +30,7 @@
  *   Based on QEMU and Xen.
  */
 
-#define pr_fmt(fmt) "pit: " fmt
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/kvm_host.h>
 #include <linux/slab.h>
@@ -351,7 +351,7 @@ static void create_pit_timer(struct kvm_pit *pit, u32 val, int is_period)
 
 		if (ps->period < min_period) {
 			pr_info_ratelimited(
-			    "kvm: requested %lld ns "
+			    "requested %lld ns "
 			    "i8254 timer period limited to %lld ns\n",
 			    ps->period, min_period);
 			ps->period = min_period;
@@ -681,7 +681,7 @@ struct kvm_pit *kvm_create_pit(struct kvm *kvm, u32 flags)
 	pid_nr = pid_vnr(pid);
 	put_pid(pid);
 
-	pit->worker = kthread_create_worker(0, "kvm-pit/%d", pid_nr);
+	pit->worker = kthread_run_worker(0, "kvm-pit/%d", pid_nr);
 	if (IS_ERR(pit->worker))
 		goto fail_kthread;
 
